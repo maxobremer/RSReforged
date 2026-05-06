@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.4] — 2026-05-06
+
+### Fixed
+- **Foundry in-app updates now download the correct version.** `4.1.3` shipped with a manifest whose `version` was `4.1.3` but whose `download` URL still pointed at the `4.1.2` zip, causing updates to loop `4.1.2 → 4.1.2` or otherwise fail to reach `4.1.3`. `4.1.4` corrects the release zip URL in `module.json` so Foundry can fetch the right distribution.
+
 ## [4.1.3] — 2026-05-03
 
 ### Added
@@ -88,7 +93,9 @@ The first RSReforged release. Forked from [MangoFVTT/fvtt-ready-set-roll-5e@v3.5
 - **MangoFVTT** — author and maintainer of upstream Ready Set Roll for D&D5e (the direct ancestor of this fork).
 - **RedReign** — author of the original [Better Rolls for 5e](https://github.com/RedReign/FoundryVTT-BetterRolls5e), which RSR is a rewrite of.
 
-[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.2...HEAD
+[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.4...HEAD
+[4.1.4]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.3...release-4.1.4
+[4.1.3]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.2...release-4.1.3
 [4.1.2]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.1...release-4.1.2
 [4.1.1]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.0...release-4.1.1
 [4.1.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.0.0...release-4.1.0
