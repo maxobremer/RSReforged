@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] — 2026-05-11
+
+### Added
+- **New *Damage Apply UI* setting picks between dnd5e's per-target damage tray and RSReforged's quick apply buttons.** Replaces the single-purpose *Enable Damage Apply Buttons* boolean with an explicit two-option dropdown so the choice surfaces at the settings screen instead of being buried in a checkbox, and so future damage-apply UIs can be added as additional options rather than as parallel booleans. Defaults to *RSReforged Quick Buttons*, matching the prior default behavior — existing worlds that left *Enable Damage Apply Buttons* on (the prior default) see no UI change on upgrade. The legacy `enableDamageButtons` setting is preserved in world storage (registered with `config: false`) so worlds with the value persisted do not lose data, but no code path consumes it anymore — `damageApplyMode` is the single source of truth.
+- **Two paired settings narrowed to *RSReforged Quick Buttons* mode.** *Always Show Apply Buttons* (renamed *Always Show RSReforged Apply Buttons*) and *Apply Damage Options* (renamed *RSReforged Apply Button Targets*) only take effect when *Damage Apply UI* is set to *RSReforged Quick Buttons*; their localized hints now state this explicitly so the dependency is visible without trial-and-error.
+
+### Changed
+- **Vanilla-roll setting renamed and clarified.** *Enable Content on Vanilla Rolls* → *Use Vanilla Rolls with RSReforged Styling*. The original name described the implementation ("apply module content to vanilla rolls"); the new name describes the user-facing trade-off. Hint rewritten to spell out both branches: enabled keeps dnd5e's vanilla workflow (including automatic attack and damage rolls for item activities) and layers RSReforged styling on top, disabled hands enabled quick rolls to RSReforged which rolls attack, damage, healing, and formulas on the quick-roll card. French and Portuguese translations updated for parity.
+- **README and Foundry listing HTML updated** to describe *Damage Apply UI* and *RSReforged Apply Button Targets* in place of the now-removed *Apply Damage Options* bullet, so the settings overview matches the actual panel.
+
+### Note for upgraders
+- If you previously *disabled* *Enable Damage Apply Buttons*, the new *Damage Apply UI* setting defaults to *RSReforged Quick Buttons* on first load of this version, which restores those buttons. Set *Damage Apply UI* to *dnd5e Native Per-Target Tray* under *Configure Settings → Module Settings → RSReforged* to opt back out.
+
 ## [4.1.5] — 2026-05-10
 
 ### Fixed

@@ -111,7 +111,8 @@ All settings live under *Configure Settings → Module Settings → RSReforged*.
 - **Always Roll Multiple Dice** — show two d20s on every roll, not just advantage or disadvantage
 - **Hide Final Result** — hide the rolled total until the GM reveals it (good for blind checks)
 - **Manual Damage Mode** — require an explicit click to roll damage, instead of auto-rolling on hit
-- **Apply Damage Options** — selected vs. targeted tokens, with priority modes
+- **Damage Apply UI** — choose dnd5e's per-target tray or RSReforged's quick apply buttons
+- **RSReforged Apply Button Targets** — selected vs. targeted tokens, with priority modes for the RSReforged quick-button UI
 - **Confirm Retroactive {Advantage, Crits}** — gate retroactive edits behind a confirm dialog
 
 ## Setting up pre-defined bonuses

@@ -300,7 +300,7 @@ function _setupCardListeners(message, html) {
         });
     }
     
-    if (SettingsUtility.getSettingValue(SETTING_NAMES.DAMAGE_BUTTONS_ENABLED)) {
+    if (SettingsUtility._useRsrDamageApplyButtons) {
         html.find('.rsr-damage-buttons button').click(async event => {
             await _processApplyButtonEvent(message, event);
         });
@@ -378,7 +378,7 @@ async function _injectContent(message, type, html) {
     switch (type) {
         case ROLL_TYPE.DAMAGE:
             if (!message.flags?.dnd5e?.item?.id && !message.system?.item?.id) {
-                const useRsrDamageButtons = SettingsUtility.getSettingValue(SETTING_NAMES.DAMAGE_BUTTONS_ENABLED);
+                const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
 
                 message.flags[MODULE_SHORT].renderDamage = true;
 
@@ -466,7 +466,7 @@ async function _injectContent(message, type, html) {
             break;
         case ROLL_TYPE.ACTIVITY: {
             if (!message.isContentVisible) return;
-            const useRsrDamageButtons = SettingsUtility.getSettingValue(SETTING_NAMES.DAMAGE_BUTTONS_ENABLED);
+            const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
 
             let actions = html.find('.card-buttons');
             if (actions.length === 0) actions = html.find('.card-activities');

@@ -17,6 +17,7 @@ export const SETTING_NAMES = {
     HIDE_FINAL_RESULT_ENABLED: "enableHideFinalResult",
     MANUAL_DAMAGE_MODE: "manualDamageMode",
     OVERLAY_BUTTONS_ENABLED: "enableOverlayButtons",
+    DAMAGE_APPLY_MODE: "damageApplyMode",
     DAMAGE_BUTTONS_ENABLED: "enableDamageButtons",
     ALWAYS_SHOW_BUTTONS: "alwaysShowButtons",
     DICE_REROLL_ENABLED: "enableDiceReroll",
@@ -30,6 +31,11 @@ export const SETTING_NAMES = {
     REROLL_EVERYONE: "rerollEveryone",
     REROLL_PLAYERS: "rerollPlayers",
     FUDGE_GM: "fudgeGM"
+}
+
+export const DAMAGE_APPLY_MODES = {
+    DND5E: "dnd5e",
+    RSR: "rsr"
 }
 
 /**
@@ -93,6 +99,32 @@ export class SettingsUtility {
             }
         });
 
+        game.settings.register(MODULE_NAME, SETTING_NAMES.DAMAGE_APPLY_MODE, {
+            name: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.DAMAGE_APPLY_MODE}.name`),
+            hint: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.DAMAGE_APPLY_MODE}.hint`),
+            scope: "world",
+            config: true,
+            type: String,
+            default: DAMAGE_APPLY_MODES.RSR,
+            requiresReload: true,
+            choices: {
+                [DAMAGE_APPLY_MODES.DND5E]: CoreUtility.localize(`${MODULE_SHORT}.choices.damageApplyMode.${DAMAGE_APPLY_MODES.DND5E}`),
+                [DAMAGE_APPLY_MODES.RSR]: CoreUtility.localize(`${MODULE_SHORT}.choices.damageApplyMode.${DAMAGE_APPLY_MODES.RSR}`)
+            }
+        });
+
+        game.settings.register(MODULE_NAME, SETTING_NAMES.DAMAGE_BUTTONS_ENABLED, {
+            // Preserve the old world setting key so existing worlds do not lose stored data.
+            // New behavior is controlled by DAMAGE_APPLY_MODE.
+            name: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.DAMAGE_BUTTONS_ENABLED}.name`),
+            hint: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.DAMAGE_BUTTONS_ENABLED}.hint`),
+            scope: "world",
+            config: false,
+            type: Boolean,
+            default: true,
+            requiresReload: true
+        });
+
         // CHAT CARD OPTIONS
         const chatCardOptions = [
             { name: SETTING_NAMES.AGGREGATE_DAMAGE, default: false },
@@ -100,7 +132,6 @@ export class SettingsUtility {
             { name: SETTING_NAMES.HIDE_FINAL_RESULT_ENABLED, default: false },
             //{ name: SETTING_NAMES.DICE_REROLL_ENABLED, default: true },
             { name: SETTING_NAMES.OVERLAY_BUTTONS_ENABLED, default: true },
-            { name: SETTING_NAMES.DAMAGE_BUTTONS_ENABLED, default: true },
             { name: SETTING_NAMES.ALWAYS_SHOW_BUTTONS, default: true },
             { name: SETTING_NAMES.CONFIRM_RETRO_ADV, default: false },
             { name: SETTING_NAMES.CONFIRM_RETRO_CRIT, default: false },
@@ -161,6 +192,10 @@ export class SettingsUtility {
      */
     static getSettingValue(settingKey) {
         return game.settings.get(MODULE_NAME, settingKey);
+    }
+
+    static get _useRsrDamageApplyButtons() {
+        return SettingsUtility.getSettingValue(SETTING_NAMES.DAMAGE_APPLY_MODE) === DAMAGE_APPLY_MODES.RSR;
     }
     
     static get _applyDamageToTargeted() {
