@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.1] — 2026-05-13
+
+### Fixed
+- **The Foundry package browser and "Check for updates" flow now install the current release.** The 4.4.0 manifest declared `version: 4.4.0` but its `download` URL still pointed at the 4.3.0 release artifact, so Foundry installed the 4.3.0 zip — whose bundled `module.json` re-identified the install as 4.3.0 — and every subsequent update check reported `4.3.0 → 4.3.0` in a loop. The download URL is now version-aligned, and the release workflow now validates both `version` and `download` against the tag so this can't ship again.
+
 ## [4.4.0] — 2026-05-13
 
 ### Changed

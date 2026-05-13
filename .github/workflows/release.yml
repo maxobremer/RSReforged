@@ -67,6 +67,30 @@ jobs:
           fi
           echo "module.json version matches tag: $manifest_version"
 
+      # Foundry reads `version` to decide whether an update is available, but
+      # fetches the zip at `download`. If those disagree, the package browser
+      # silently installs the older zip — and since the older zip's bundled
+      # module.json also calls itself by its old version, update checks loop
+      # forever reporting "X.Y.Z -> X.Y.Z". Caught the hard way in 4.4.0.
+      #
+      # Both env values are safe to splice into shell: TAG_VERSION was filtered
+      # by the regex check in the "Derive version from tag" step, and
+      # github.repository is GitHub-controlled (owner/name, no metacharacters).
+      - name: Verify module.json download URL matches tag
+        env:
+          TAG_VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          download_url=$(jq -r .download module.json)
+          expected="https://github.com/${REPOSITORY}/releases/download/release-${TAG_VERSION}/rsreforged-release-${TAG_VERSION}.zip"
+          if [ "$download_url" != "$expected" ]; then
+            echo "module.json download URL is $download_url" >&2
+            echo "expected                   $expected" >&2
+            echo "Bump the download URL in module.json before tagging." >&2
+            exit 1
+          fi
+          echo "Download URL matches tag: $download_url"
+
       - name: Build distribution zip
         env:
           TAG_VERSION: ${{ steps.version.outputs.version }}
