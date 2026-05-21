@@ -132,12 +132,15 @@ describe("HooksUtility preCreateChatMessage quick-roll flags", () => {
         state.settings.enableActivityQuickRoll = false;
         expect(preUseActivity(activity, usageConfig, dialogConfig, messageConfig)).toBe(true);
         expect(state.processActivity).not.toHaveBeenCalled();
-        expect(usageConfig.subsequentActions).toBeUndefined();
 
         state.settings.enableActivityQuickRoll = true;
         expect(preUseActivity(activity, usageConfig, dialogConfig, messageConfig)).toBe(true);
         expect(state.processActivity).toHaveBeenCalledWith(activity, usageConfig, dialogConfig, messageConfig);
-        expect(usageConfig.subsequentActions).toBe(false);
+        // The hook's contract is delegation: it routes PRE_USE_ACTIVITY into
+        // processActivity when the setting is on. Side effects on usageConfig
+        // (subsequentActions, dialogConfig.configure, MODULE_SHORT flags) belong
+        // to processActivity and are exercised in roll.test.mjs against the real
+        // implementation — asserting them here would lock in mock behavior.
     });
 
     it("preserves slow-roll flags written by the pre-use activity hook", () => {
