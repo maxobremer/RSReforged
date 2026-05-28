@@ -16,7 +16,12 @@ export class BonusManager {
         if (!message.isAuthor && !game.user.isGM) return false;
         if (!$html || $html.length === 0) return false;
 
-        $html.find('.rsr-damage-buttons button, .rsr-damage-buttons-xl button')
+        // Narrow to RSR's own apply-button actions so foreign buttons added under
+        // .rsr-damage-buttons / .rsr-damage-buttons-xl by third-party listeners
+        // (rsreforged.renderApplyDamageButtons hook — see docs/INTEGRATION.md)
+        // can receive their own clicks. Matches the narrowing in _setupCardListeners.
+        const rsrApplyActions = '[data-action="rsr-apply-damage"], [data-action="rsr-apply-temp"]';
+        $html.find('.rsr-damage-buttons, .rsr-damage-buttons-xl').find(rsrApplyActions)
             .off('click.rsrFix')
             .on('click.rsrFix', (ev) => {
                 ev.stopPropagation();

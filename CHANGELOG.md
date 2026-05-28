@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] — 2026-05-28
+
+### Fixed
+- **RSR's damage-apply click handlers no longer hijack foreign buttons.** Two listeners — `_setupCardListeners` in `src/utils/chat.js` and the `click.rsrFix` propagation-stopper in `BonusManager.init` (`src/utils/bonus.js`) — previously bound to the broad `.rsr-damage-buttons button` / `.rsr-damage-buttons-xl button` selectors. The `chat.js` handlers called `preventDefault()` and `stopPropagation()` unconditionally before checking `data-action`, and `BonusManager`'s handler called `stopPropagation()` on every match. Together they silently swallowed clicks on any third-party button injected into the same containers (e.g. via the new `rsreforged.renderApplyDamageButtons` hook). Both selectors are now narrowed to `[data-action="rsr-apply-damage"], [data-action="rsr-apply-temp"]` — exactly the two actions the RSR templates emit — so foreign buttons can coexist without being intercepted.
+- **`rsreforged.renderRoll` now passes the outer message-content node as its `html` argument**, matching the contract the docs already advertised. Previously the inject functions forwarded their own insertion-target argument (which on activity cards is `.card-buttons` / `.card-activities` / `.dnd5e2.chat-card`, and on standalone damage rolls is the detached `.dice-roll` enricher), so consumers querying `html` for sibling card content would have missed most of the card. The three inject helpers (`_injectAttackRoll`, `_injectDamageRoll`, `_injectFormulaRoll`) now accept an optional `contentHtml` parameter that defaults to their insertion-target arg; `_injectContent` threads its own `html` through that option so the hook sees the full content node. A source-level test (`tests/integration-hooks.test.mjs`) locks this in so the contract can't regress silently.
+
+### Added
+- **Integration API for third-party modules** ([`docs/INTEGRATION.md`](docs/INTEGRATION.md)). Addresses [#3 (AC5E)](https://github.com/arrowedisgaming/RSReforged/issues/3) and [#13 (wm5e)](https://github.com/arrowedisgaming/RSReforged/issues/13), and the structural concern raised in [thatlonelybugbear/wm5e #25](https://github.com/thatlonelybugbear/wm5e/issues/25) that earlier versions of Ready Set Roll re-rendered chat messages "without any surface that would allow for other modules to work together." RSReforged now emits four public hooks at deterministic points in its chat-render lifecycle, all via `Hooks.callAll` (synchronous, swallow listener errors): `rsreforged.preRenderChatMessageContent` (before any DOM removal — last chance to snapshot the dnd5e card), `rsreforged.renderChatMessageContent` (after `_setupCardListeners` — primary decoration point), `rsreforged.renderRoll` (after each attack / damage / formula section is inserted; emitted on every successful return of the inject functions including the native-mode early-return in `_injectDamageRoll`, and the just-inserted section node is passed as `sectionHtml` so listeners don't have to grep the card), and `rsreforged.renderApplyDamageButtons` (after the apply-damage UI is wired). Three rules apply to consumers and are spelled out in the docs: hooks are synchronous (`Hooks.callAll` doesn't await), listeners must be idempotent because `message.update()` re-renders re-fire the chain on new HTML, and `preRender` may fire without a matching `render` when RSR merges a child roll message into a parent and deletes the child. Two worked examples ship with the docs — re-attaching wm5e's `.wm5e-mastery-reference` anchors after RSR strips the dnd5e card, and re-applying AC5E's `data-tooltip` annotations on save/check buttons after every re-render. The hook names, argument positions, and types are now public API and follow SemVer: breaking changes require a major-version bump and a deprecation cycle of at least one minor release before removal.
+
 ## [4.5.0] — 2026-05-27
 
 ### Added
@@ -149,7 +158,14 @@ The first RSReforged release. Forked from [MangoFVTT/fvtt-ready-set-roll-5e@v3.5
 - **MangoFVTT** — author and maintainer of upstream Ready Set Roll for D&D5e (the direct ancestor of this fork).
 - **RedReign** — author of the original [Better Rolls for 5e](https://github.com/RedReign/FoundryVTT-BetterRolls5e), which RSR is a rewrite of.
 
-[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.4...HEAD
+[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.6.0...HEAD
+[4.6.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.5.0...release-4.6.0
+[4.5.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.4.2...release-4.5.0
+[4.4.2]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.4.1...release-4.4.2
+[4.4.1]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.4.0...release-4.4.1
+[4.4.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.3.0...release-4.4.0
+[4.3.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.2.0...release-4.3.0
+[4.2.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.4...release-4.2.0
 [4.1.4]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.3...release-4.1.4
 [4.1.3]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.2...release-4.1.3
 [4.1.2]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.1.1...release-4.1.2

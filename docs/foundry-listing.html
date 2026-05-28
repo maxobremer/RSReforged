@@ -62,6 +62,7 @@
 </tbody></table>
 <p><strong>RSReforged does not work on Foundry v13</strong> or <strong>dnd5e 5.0–5.2</strong>. If you&#39;re on those versions, stay on <a href="https://github.com/MangoFVTT/fvtt-ready-set-roll-5e/releases/tag/release-3.5.0">upstream RSR v3.5.0</a> until you upgrade.</p>
 <p>RSReforged also conflicts with other modules that overhaul the dnd5e roll pipeline, most notably <a href="https://gitlab.com/tposney/midi-qol">Midi-QOL</a>. They will fight each other in unpredictable ways. Pick one.</p>
+<p>Modules that <strong>decorate</strong> chat cards (rather than rewriting the roll pipeline) — Automated Conditions 5e, Automated Weapon Masteries 5e, and similar — can coexist with RSReforged by listening to the <a href="https://github.com/arrowedisgaming/RSReforged#integration-api-for-module-authors">Integration API</a> hooks instead of Foundry&#39;s <code>renderChatMessageHTML</code>. Upstream support depends on those modules adopting the hooks.</p>
 <h2>Install</h2>
 <p>In Foundry&#39;s <em>Add-on Modules → Install Module</em> dialog, paste this into the <strong>Manifest URL</strong> field:</p>
 <pre><code>https://raw.githubusercontent.com/arrowedisgaming/RSReforged/master/module.json
@@ -182,6 +183,44 @@
 <li><strong>Typed damage splitting</strong> (separate visual chips for <code>1d8[fire] + 1d4[cold]</code>) isn&#39;t in the current release. It was intended to ship when the fork started, but the implementation file was missing from the source PR. It may land in a future release.</li>
 <li>See the <a href="https://github.com/arrowedisgaming/RSReforged/issues">issue tracker</a> for everything else.</li>
 </ul>
+<h2>Integration API (for module authors)</h2>
+<p>RSReforged emits a small set of public hooks so other modules can decorate its chat cards without racing Foundry&#39;s render lifecycle. Full reference, contract rules, and worked examples in <a href="https://github.com/arrowedisgaming/RSReforged/blob/master/docs/INTEGRATION.md"><code>docs/INTEGRATION.md</code></a>.</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>When it fires</th>
+<th>Args</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>rsreforged.preRenderChatMessageContent</code></td>
+<td>Before RSR strips the dnd5e card</td>
+<td><code>(message, html, type)</code></td>
+</tr>
+<tr>
+<td><code>rsreforged.renderChatMessageContent</code></td>
+<td>After RSR finishes its DOM rewrite — primary decoration point</td>
+<td><code>(message, html, type)</code></td>
+</tr>
+<tr>
+<td><code>rsreforged.renderRoll</code></td>
+<td>After each attack / damage / formula section is inserted</td>
+<td><code>(message, html, type, sectionHtml)</code></td>
+</tr>
+<tr>
+<td><code>rsreforged.renderApplyDamageButtons</code></td>
+<td>After the damage-apply UI is wired up</td>
+<td><code>(message, html, buttonsHtml)</code></td>
+</tr>
+</tbody></table>
+<p>Three rules: hooks are <strong>synchronous</strong> (no awaiting), listeners must be <strong>idempotent</strong> (re-renders re-fire the chain), and <code>preRender</code> may fire without a matching <code>render</code> (RSR sometimes merges child rolls into a parent and deletes the child).</p>
+<pre><code class="language-js">// Minimal example: annotate save buttons with a custom tooltip after every render.
+Hooks.on(&quot;rsreforged.renderChatMessageContent&quot;, (message, html, type) =&gt; {
+    html.find(&#39;button[data-action=rollSave]&#39;)
+        .attr(&#39;data-tooltip&#39;, myTooltipFor(message));
+});
+</code></pre>
 <h2>Contributing</h2>
 <p>Issues and PRs welcome at <a href="https://github.com/arrowedisgaming/RSReforged">github.com/arrowedisgaming/RSReforged</a>. If a fix is also relevant upstream, consider opening it against <a href="https://github.com/MangoFVTT/fvtt-ready-set-roll-5e">MangoFVTT/fvtt-ready-set-roll-5e</a> too. Keeping the codebases close benefits everyone.</p>
 <h2>Credits</h2>

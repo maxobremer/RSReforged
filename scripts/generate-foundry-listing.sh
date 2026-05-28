@@ -46,7 +46,8 @@ EOF
         skip == 1 && /<\/p>/ { skip = 0; next }
         skip == 0 { print }
       ' \
-    | sed 's|href="#setting-up-pre-defined-bonuses"|href="https://github.com/arrowedisgaming/RSReforged#setting-up-pre-defined-bonuses"|g'
+    | sed 's|href="#setting-up-pre-defined-bonuses"|href="https://github.com/arrowedisgaming/RSReforged#setting-up-pre-defined-bonuses"|g' \
+    | sed 's|href="#integration-api-for-module-authors"|href="https://github.com/arrowedisgaming/RSReforged#integration-api-for-module-authors"|g'
 } > "$out"
 
 line_count=$(wc -l < "$out" | tr -d ' ')

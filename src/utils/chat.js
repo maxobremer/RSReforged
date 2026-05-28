@@ -301,11 +301,16 @@ function _setupCardListeners(message, html) {
     }
     
     if (SettingsUtility._useRsrDamageApplyButtons) {
-        html.find('.rsr-damage-buttons button').click(async event => {
+        // Narrow to RSR's own action attributes so foreign buttons injected by
+        // third-party modules via the rsreforged.renderApplyDamageButtons hook
+        // (see docs/INTEGRATION.md) don't get their clicks swallowed by RSR's
+        // unconditional preventDefault()/stopPropagation() in the handlers.
+        const rsrApplyActions = '[data-action="rsr-apply-damage"], [data-action="rsr-apply-temp"]';
+        html.find('.rsr-damage-buttons').find(rsrApplyActions).click(async event => {
             await _processApplyButtonEvent(message, event);
         });
 
-        html.find('.rsr-damage-buttons-xl button').click(async event => {
+        html.find('.rsr-damage-buttons-xl').find(rsrApplyActions).click(async event => {
             await _processApplyTotalButtonEvent(message, event);
         });
     }
@@ -359,7 +364,12 @@ function _safeInsert(sectionHTML, targetHTML) {
 
 async function _injectContent(message, type, html) {
     LogUtility.log("Injecting content into chat message");
-    
+
+    // Integration surface — fires before any DOM removal so third-party modules
+    // (wm5e, automated-conditions-5e, etc.) can snapshot the dnd5e-rendered card
+    // before RSR strips it. See docs/INTEGRATION.md.
+    Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, html, type);
+
     // dnd5e 5.3.0: getOriginatingMessage() is a native ChatMessage5e method that returns
     // the usage card a roll message was spawned from, or `this` when no link exists.
     // We only treat it as a real parent when it is a different message.
@@ -391,7 +401,7 @@ async function _injectContent(message, type, html) {
                     html.prepend('<div class="dnd5e2 chat-card"></div>');
                     html.find('.chat-card').append(enricher);
 
-                    await _injectDamageRoll(message, enricher);
+                    await _injectDamageRoll(message, enricher, { contentHtml: html });
                     await _injectApplyDamageButtons(message, html);
                     enricher.remove();
                 }
@@ -488,7 +498,7 @@ async function _injectContent(message, type, html) {
 
             if (message.flags[MODULE_SHORT].renderAttack || message.flags[MODULE_SHORT].renderAttack === false) {
                 html.find('[data-action=rollAttack], [data-action=attack]').remove();
-                await _injectAttackRoll(message, actions);
+                await _injectAttackRoll(message, actions, { contentHtml: html });
 
                 html.find('.rsr-section-attack').append(html.find('.supplement'));
                 html.find('.supplement').removeClass('supplement').addClass('rsr-supplement');
@@ -504,12 +514,12 @@ async function _injectContent(message, type, html) {
             }
 
             if (message.flags[MODULE_SHORT].renderDamage) {
-                await _injectDamageRoll(message, actions, { mode: useRsrDamageButtons ? "rsr" : "native" });
+                await _injectDamageRoll(message, actions, { mode: useRsrDamageButtons ? "rsr" : "native", contentHtml: html });
             }
 
             if (message.flags[MODULE_SHORT].renderFormula) {
                 html.find('[data-action=rollFormula], [data-action=formula]').remove();
-                await _injectFormulaRoll(message, actions);
+                await _injectFormulaRoll(message, actions, { contentHtml: html });
             }
 
             if (useRsrDamageButtons) {
@@ -524,9 +534,13 @@ async function _injectContent(message, type, html) {
     }
 
     _setupCardListeners(message, html);
+
+    // Integration surface — fires after RSR has finished its DOM rewrite. Primary
+    // decoration point for third-party modules. See docs/INTEGRATION.md.
+    Hooks.callAll(`${MODULE_SHORT}.renderChatMessageContent`, message, html, type);
 }
 
-async function _injectAttackRoll(message, html) {
+async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
     const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message);
     
@@ -575,9 +589,11 @@ async function _injectAttackRoll(message, html) {
     
     $(sectionHTML).append(rollHTML);
     _safeInsert(sectionHTML, html);
+
+    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.ATTACK, sectionHTML);
 }
 
-async function _injectFormulaRoll(message, html) {
+async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
     const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message);
     
@@ -600,9 +616,11 @@ async function _injectFormulaRoll(message, html) {
     
     $(sectionHTML).append(rollHTML);
     _safeInsert(sectionHTML, html);
+
+    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.FORMULA, sectionHTML);
 }
 
-async function _injectDamageRoll(message, html, { mode = "rsr" } = {}) {
+async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = html } = {}) {
     const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message).filter(r => r instanceof CONFIG.Dice.DamageRoll || r.class === "DamageRoll" || r.constructor?.name === "DamageRoll");
 
@@ -631,6 +649,8 @@ async function _injectDamageRoll(message, html, { mode = "rsr" } = {}) {
         }
 
         _safeInsert(nativeHTML, html);
+
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.DAMAGE, nativeHTML);
         return;
     }
 
@@ -656,6 +676,8 @@ async function _injectDamageRoll(message, html, { mode = "rsr" } = {}) {
     
     $(sectionHTML).append(rollHTML);
     _safeInsert(sectionHTML, html);
+
+    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.DAMAGE, sectionHTML);
 }
 
 async function _injectDamageButton(message, html) {
@@ -718,6 +740,8 @@ async function _injectApplyDamageButtons(message, html) {
         _onDamageHoverEnd(total);
         total.hover(_onDamageHover.bind(this, message, total), _onDamageHoverEnd.bind(this, total));
     }
+
+    Hooks.callAll(`${MODULE_SHORT}.renderApplyDamageButtons`, message, html, total);
 }
 
 async function _injectOverlayButtons(message, html) {

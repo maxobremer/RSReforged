@@ -60,6 +60,8 @@ RSReforged removes clicks from D&D 5e rolls in Foundry VTT.
 
 RSReforged also conflicts with other modules that overhaul the dnd5e roll pipeline, most notably [Midi-QOL](https://gitlab.com/tposney/midi-qol). They will fight each other in unpredictable ways. Pick one.
 
+Modules that **decorate** chat cards (rather than rewriting the roll pipeline) — Automated Conditions 5e, Automated Weapon Masteries 5e, and similar — can coexist with RSReforged by listening to the [Integration API](#integration-api-for-module-authors) hooks instead of Foundry's `renderChatMessageHTML`. Upstream support depends on those modules adopting the hooks.
+
 ## Install
 
 In Foundry's *Add-on Modules → Install Module* dialog, paste this into the **Manifest URL** field:
@@ -162,6 +164,27 @@ Examples:
 
 - **Typed damage splitting** (separate visual chips for `1d8[fire] + 1d4[cold]`) isn't in the current release. It was intended to ship when the fork started, but the implementation file was missing from the source PR. It may land in a future release.
 - See the [issue tracker](https://github.com/arrowedisgaming/RSReforged/issues) for everything else.
+
+## Integration API (for module authors)
+
+RSReforged emits a small set of public hooks so other modules can decorate its chat cards without racing Foundry's render lifecycle. Full reference, contract rules, and worked examples in [`docs/INTEGRATION.md`](https://github.com/arrowedisgaming/RSReforged/blob/master/docs/INTEGRATION.md).
+
+| Hook | When it fires | Args |
+|---|---|---|
+| `rsreforged.preRenderChatMessageContent` | Before RSR strips the dnd5e card | `(message, html, type)` |
+| `rsreforged.renderChatMessageContent` | After RSR finishes its DOM rewrite — primary decoration point | `(message, html, type)` |
+| `rsreforged.renderRoll` | After each attack / damage / formula section is inserted | `(message, html, type, sectionHtml)` |
+| `rsreforged.renderApplyDamageButtons` | After the damage-apply UI is wired up | `(message, html, buttonsHtml)` |
+
+Three rules: hooks are **synchronous** (no awaiting), listeners must be **idempotent** (re-renders re-fire the chain), and `preRender` may fire without a matching `render` (RSR sometimes merges child rolls into a parent and deletes the child).
+
+```js
+// Minimal example: annotate save buttons with a custom tooltip after every render.
+Hooks.on("rsreforged.renderChatMessageContent", (message, html, type) => {
+    html.find('button[data-action=rollSave]')
+        .attr('data-tooltip', myTooltipFor(message));
+});
+```
 
 ## Contributing
 

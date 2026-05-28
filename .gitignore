@@ -11,4 +11,11 @@ node_modules/
 # never shipped. Tracked files under docs/ (foundry-listing.html, RELEASING.md,
 # upstream-v3.5.0-snapshot/) are unaffected.
 docs/midi-qol-v13/
+docs/other_modules/
+docs/errors/
 .claude/
+
+# Local-only release outreach drafts (working text for upstream module-author
+# comments). Kept in the repo for convenient editing but never tracked, since
+# the actual posted comments and their substitutions are not artifacts.
+docs/outreach-drafts.md
