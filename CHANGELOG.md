@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0] — 2026-06-02
+
+### Fixed
+- **`SaveActivity` with no damage parts no longer crashes the chat handler.** Activities such as Faerie Fire or Bane previously threw `TypeError: Cannot read properties of undefined (reading 'class')` from `DamageRoll._evaluateASTAsync` when RSR called `activity.rollDamage()` on them — `getDamageConfig` returns `{ rolls: [] }` in that case, and the empty rolls array tripped the dnd5e roll builder. `ActivityUtility.getDamageFromMessage` now short-circuits to `null` when the resolved damage config produces zero rolls (checked after RSR builds the same `config` object it passes to `rollDamage`, so ammo-driven attacks whose damage comes entirely from the ammunition aren't false-negatived by `AttackActivity#getDamageConfig`'s ammo-merge contract). Surfaced and fixed by [@thatlonelybugbear](https://github.com/thatlonelybugbear) in [#14](https://github.com/arrowedisgaming/RSReforged/pull/14) while integrating AC5E.
+
+### Changed
+- **RSReforged now listens on the non-`V2` dnd5e pre-roll hooks** (`dnd5e.preRollAbilityCheck`, `preRollSavingThrow`, `preRollSkill`, `preRollTool`, `preRollAttack`, `preRollDamage`). In dnd5e 5.3.x both `preRoll<Name>` and `preRoll<Name>V2` are emitted from `basic-roll.mjs:101-104` with the same `(config, dialog, message)` signature, so this is behaviourally a no-op — but it puts RSR in the same hook lane as other modules (notably automated-conditions-5e) that listen on the non-`V2` names, which makes cross-module ordering predictable. The `QUICK_ABILITY_ENABLED` defer guard for skill / tool checks in `registerRollHooks` is unchanged since the `hookNames` fan-out applies to both name variants. Contributed by [@thatlonelybugbear](https://github.com/thatlonelybugbear) in [#14](https://github.com/arrowedisgaming/RSReforged/pull/14).
+
 ## [4.6.0] — 2026-05-28
 
 ### Fixed
