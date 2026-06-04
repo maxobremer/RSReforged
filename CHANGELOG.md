@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.8.2] — 2026-06-04
+
+### Fixed
+- **Weapon-mastery attack quick rolls no longer throw dnd5e's `.flavor-text.remove()` error, duplicate the item header, or double-animate the attack d20 in Dice So Nice.** Fixes [#18](https://github.com/arrowedisgaming/RSReforged/issues/18). Processed quick usage cards keep `flags.dnd5e.roll.mastery` for mastery consumers, but RSR now hides `flags.dnd5e.roll` during dnd5e's usage-card enrichment and restores it before RSR renders the rebuilt card; the suppression also self-heals at the start of each render pass, so a render chain interrupted by another module's error can never leave the flag missing across later renders. Child attack and damage roll merges replace existing same-type rolls instead of appending, so a weapon attack card ends with one attack `D20Roll` while preserving existing damage rolls — and a child whose rolls fail to deserialize leaves the parent's rolls untouched rather than evicting them with no replacement. RSR's internal dice fragment renders still strip `flags.dnd5e.item` from cloned `roll.toMessage()` payloads. Activity roll persistence lets Dice So Nice animate the `ChatMessage.update({ rolls })` itself instead of manually calling `showForRoll` first; DSN versions older than 5.1.0 (which only animate on message creation) still get the manual 3D roll, and the dice-sound fallback plays when no enabled DSN is present.
+- **Standalone damage quick rolls clear the duplicated flavor text in the chat-message header again.** Foundry renders a roll message's `.flavor-text` inside `.message-header` — a sibling of `.message-content` — so the clear now climbs to the `.chat-message` root instead of searching only within the message body, while staying scoped to the one message so it can never blank flavor text of neighbouring cards.
+
 ## [4.8.1] — 2026-06-03
 
 ### Fixed

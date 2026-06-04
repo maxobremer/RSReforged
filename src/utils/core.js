@@ -77,6 +77,30 @@ export class CoreUtility {
     }
 
     /**
+     * Checks if the installed Dice So Nice version animates rolls appended to an
+     * existing ChatMessage via ChatMessage.update({ rolls }). DSN handles this since
+     * 5.1.0 (its changelog: "fix multiple issues when updating a ChatMessage with new
+     * dice"); older versions only animate on message creation, so callers must
+     * trigger the 3D roll manually for them.
+     * @returns {Boolean} Whether DSN animates update-added rolls (assumed true when the version is unreadable).
+     */
+    static dice3dAnimatesRollUpdates() {
+        const version = game.modules?.get?.("dice-so-nice")?.version;
+        if (!version || !/^\d/.test(version)) return true;
+        return !foundry.utils.isNewerVersion("5.1.0", version);
+    }
+
+    /**
+     * Serializes an array of rolls for storage in message flags, passing through
+     * entries that are already plain data.
+     * @param {Array<Roll|object>} rolls The rolls to serialize.
+     * @returns {object[]} The serialized roll data.
+     */
+    static serializeRolls(rolls) {
+        return Array.from(rolls ?? []).map(r => (r && typeof r.toJSON === "function") ? r.toJSON() : r);
+    }
+
+    /**
      * Checks if a given module name exists and is active in Foundry.
      * @param {String} name The name of the module to check if active. 
      * @returns 

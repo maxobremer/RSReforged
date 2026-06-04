@@ -300,6 +300,16 @@ export async function setupFoundryEnv(options = {}) {
             deepClone: (value) => structuredClone(value),
             duplicate: (value) => structuredClone(value),
             mergeObject: (target, source) => ({ ...target, ...source }),
+            // Mirrors Foundry's isNewerVersion: dot-separated numeric comparison,
+            // missing parts treated as 0; returns true when v1 > v0.
+            isNewerVersion: (v1, v0) => {
+                const parts = (v) => String(v).split(".").map((p) => parseInt(p, 10) || 0);
+                const [a, b] = [parts(v1), parts(v0)];
+                for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+                }
+                return false;
+            },
             getProperty: (object, path) => path.split(".").reduce((value, key) => value?.[key], object),
             escapeHTML: (value) => String(value)
                 .replaceAll("&", "&amp;")
@@ -352,7 +362,15 @@ export async function setupFoundryEnv(options = {}) {
             })
         },
         modules: {
-            get: vi.fn((name) => ({ active: activeModules.get(name) ?? false, version: "test" }))
+            // options.modules entries are either booleans (active flag) or objects
+            // ({ active, version }) when a test needs to pin a module version.
+            get: vi.fn((name) => {
+                const entry = activeModules.get(name);
+                if (entry && typeof entry === "object") {
+                    return { active: entry.active ?? true, version: entry.version ?? "test" };
+                }
+                return { active: entry ?? false, version: "test" };
+            })
         },
         messages,
         actors: new Map(),

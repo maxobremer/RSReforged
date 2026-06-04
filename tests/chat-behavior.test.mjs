@@ -167,6 +167,39 @@ describe("ChatUtility message lifecycle behavior", () => {
         expect(env.hookCalls.filter((call) => call.name === `${MODULE_SHORT}.renderRoll`).map((call) => call.args[2])).toEqual(["damage"]);
     });
 
+    it("hides dnd5e roll metadata during usage-card enrichment, then restores it for RSR (#18)", () => {
+        const message = new env.classes.TestChatMessage({
+            type: "usage",
+            flags: {
+                [MODULE_SHORT]: {
+                    quickRoll: true,
+                    processed: true
+                },
+                dnd5e: {
+                    item: { id: "weapon-1" },
+                    roll: { type: "attack", mastery: "sap" }
+                }
+            }
+        });
+        const html = $(`
+            <article class="chat-message">
+                <header class="message-header"></header>
+                <div class="message-content"></div>
+            </article>
+        `);
+
+        ChatUtility.suppressDnd5eEnrichedRollFlavor(message);
+
+        expect(message.flags.dnd5e.roll).toBeUndefined();
+        expect(message._rsrSuppressedDnd5eRoll).toEqual({ type: "attack", mastery: "sap" });
+        expect(html[0].querySelector(".message-content .chat-card")).toBeNull();
+
+        ChatUtility.restoreDnd5eEnrichedRollFlavor(message);
+
+        expect(message.flags.dnd5e.roll).toEqual({ type: "attack", mastery: "sap" });
+        expect(message._rsrSuppressedDnd5eRoll).toBeUndefined();
+    });
+
     it("merges child attack rolls into their originating usage card and deletes the child message", async () => {
         const parentRoll = makeRoll(env.classes.D20Roll, { formula: "1d20+3", total: 14, faces: 20, results: [11] });
         const childRoll = makeRoll(env.classes.D20Roll, { formula: "1d20+5", total: 19, faces: 20, results: [14] });
@@ -205,8 +238,86 @@ describe("ChatUtility message lifecycle behavior", () => {
             quickRoll: true,
             renderAttack: true
         });
-        expect(parent.flags[MODULE_SHORT].rolls.map((roll) => roll.class)).toEqual(["D20Roll", "D20Roll"]);
+        expect(parent.flags[MODULE_SHORT].rolls.map((roll) => roll.class)).toEqual(["D20Roll"]);
+        expect(parent.flags[MODULE_SHORT].rolls[0].total).toBe(19);
         expect(parent.updatedWith).toMatchObject({ flavor: "vanilla" });
         expect(child.flags[MODULE_SHORT].processed).toBe(false);
+    });
+
+    it("replaces a merged child attack roll without dropping existing damage rolls", async () => {
+        const parentAttack = makeRoll(env.classes.D20Roll, { formula: "1d20+3", total: 14, faces: 20, results: [11] });
+        const parentDamage = makeRoll(env.classes.DamageRoll, { formula: "1d8+3", total: 8, faces: 8, results: [5] });
+        const childAttack = makeRoll(env.classes.D20Roll, { formula: "1d20+5", total: 19, faces: 20, results: [14] });
+        const parent = new env.classes.TestChatMessage({
+            id: "parent-with-damage",
+            type: "usage",
+            isAuthor: true,
+            flags: {
+                [MODULE_SHORT]: {
+                    quickRoll: true,
+                    processed: true,
+                    rolls: [parentAttack, parentDamage]
+                }
+            }
+        });
+        const child = new env.classes.TestChatMessage({
+            id: "replacement-child",
+            type: "roll",
+            isAuthor: true,
+            rolls: [childAttack],
+            flags: {
+                [MODULE_SHORT]: {
+                    quickRoll: true,
+                    processed: true
+                },
+                dnd5e: { roll: { type: "attack" } }
+            },
+            getOriginatingMessage: () => parent
+        });
+        const html = $(`<article><div class="message-content"><div class="dice-roll"></div></div></article>`);
+
+        await ChatUtility.processChatMessage(child, html);
+
+        expect(parent.flags[MODULE_SHORT].rolls.map((roll) => roll.class)).toEqual(["D20Roll", "DamageRoll"]);
+        expect(parent.flags[MODULE_SHORT].rolls.map((roll) => roll.total)).toEqual([19, 8]);
+    });
+
+    it("keeps existing parent rolls when a merged child carries no usable rolls", async () => {
+        // Regression guard: replace-by-type must never evict same-type rolls without a
+        // replacement — a child whose rolls fail to deserialize (getMessageRolls returns
+        // an empty array) must leave the parent's roll data untouched.
+        const parentAttack = makeRoll(env.classes.D20Roll, { formula: "1d20+3", total: 14, faces: 20, results: [11] });
+        const parent = new env.classes.TestChatMessage({
+            id: "parent-kept-intact",
+            type: "usage",
+            isAuthor: true,
+            flags: {
+                [MODULE_SHORT]: {
+                    quickRoll: true,
+                    processed: true,
+                    rolls: [parentAttack]
+                }
+            }
+        });
+        const child = new env.classes.TestChatMessage({
+            id: "rollless-child",
+            type: "roll",
+            isAuthor: true,
+            rolls: [],
+            flags: {
+                [MODULE_SHORT]: {
+                    quickRoll: true,
+                    processed: true
+                },
+                dnd5e: { roll: { type: "attack" } }
+            },
+            getOriginatingMessage: () => parent
+        });
+        const html = $(`<article><div class="message-content"><div class="dice-roll"></div></div></article>`);
+
+        await ChatUtility.processChatMessage(child, html);
+
+        expect(parent.flags[MODULE_SHORT].rolls.map((roll) => roll.class)).toEqual(["D20Roll"]);
+        expect(parent.flags[MODULE_SHORT].rolls[0].total).toBe(14);
     });
 });

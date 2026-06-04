@@ -177,7 +177,7 @@ export class RerollManager {
 }
 
 function _persistRolls(message, rolls) {
-    const serialised = rolls.map(r => r.toJSON ? r.toJSON() : r);
+    const serialised = CoreUtility.serializeRolls(rolls);
 
     if (message.flags?.[MODULE_SHORT]) {
         message.flags[MODULE_SHORT].rolls = serialised;

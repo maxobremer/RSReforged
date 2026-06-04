@@ -257,7 +257,7 @@ describe("Integration API: rsreforged.* hook emissions in chat.js", () => {
         // Regression: runActivityAction (manual damage button) must keep ChatMessage.rolls
         // in step with flags.rsreforged.rolls so modules reading the collection don't go stale.
         const body = extractFunctionBody(ACTIVITY_JS, "static async runActivityAction(message, action)");
-        expect(body).toMatch(/const\s+serializedRolls\s*=\s*currentRolls\.map/);
+        expect(body).toMatch(/const\s+serializedRolls\s*=\s*CoreUtility\.serializeRolls\(currentRolls\)/);
         expect(body).toMatch(/message\.flags\[MODULE_SHORT\]\.rolls\s*=\s*serializedRolls/);
         expect(body).toMatch(/rolls:\s*serializedRolls/);
     });
@@ -307,7 +307,7 @@ describe("Integration API: rsreforged.* hook emissions in chat.js", () => {
 
     it("syncs quick activity rolls onto the parent ChatMessage rolls collection for wm5e click handlers", () => {
         const body = extractFunctionBody(ACTIVITY_JS, "static async runActivityActions(message)");
-        expect(body).toMatch(/const\s+serializedRolls\s*=\s*currentRolls\.map/);
+        expect(body).toMatch(/const\s+serializedRolls\s*=\s*CoreUtility\.serializeRolls\(currentRolls\)/);
         expect(body).toMatch(/message\.flags\[MODULE_SHORT\]\.rolls\s*=\s*serializedRolls/);
         expect(body).toMatch(/rolls:\s*serializedRolls/);
     });
@@ -327,6 +327,37 @@ describe("Integration API: rsreforged.* hook emissions in chat.js", () => {
         expect(CHAT_JS).not.toMatch(/removeClass\(\s*['"`]supplement['"`]\s*\)/);
         // And the additive class must still be applied so RSR's CSS hits.
         expect(CHAT_JS).toMatch(/addClass\(\s*['"`]rsr-supplement['"`]\s*\)/);
+    });
+
+    it("renders synthetic roll dice via _renderDnd5eDiceFragment in all inject helpers — avoids item-flavor enrichment on cloned roll fragments", () => {
+        expect(CHAT_JS).toMatch(/async function _renderDnd5eDiceFragment\(chatData\)/);
+        const fragmentBody = extractFunctionBody(CHAT_JS, "async function _renderDnd5eDiceFragment(chatData)");
+        expect(fragmentBody).toMatch(/foundry\.utils\.deepClone\(chatData\)/);
+        expect(fragmentBody).toMatch(/delete prepared\.flags\.dnd5e\.item/);
+
+        for (const signature of [
+            "async function _injectAttackRoll(message, html, { contentHtml = html } = {})",
+            "async function _injectFormulaRoll(message, html, { contentHtml = html } = {})",
+            "async function _injectDamageRoll(message, html, { mode = \"rsr\", contentHtml = html } = {})"
+        ]) {
+            const body = extractFunctionBody(CHAT_JS, signature);
+            expect(body).toMatch(/_renderDnd5eDiceFragment\(chatData\)/);
+            expect(body).not.toMatch(/new ChatMessage5e\(chatData\)\.renderHTML\(\)/);
+        }
+
+        expect(CHAT_JS).not.toMatch(/new ChatMessage5e\(chatData\)\.renderHTML\(\)/);
+    });
+
+    it("scopes standalone damage flavor clearing to the message root — Foundry renders .flavor-text in .message-header, a sibling of .message-content", () => {
+        // `html` at the clearing site is the .message-content node, so the selector
+        // must climb to the .chat-message root to reach the header flavor while never
+        // leaking into other messages (which a bare .parent().find() could when the
+        // content fallback makes `html` the message root itself).
+        const body = extractFunctionBody(CHAT_JS, "async function _injectContent(message, type, html)");
+        expect(body).toMatch(/html\.closest\(['"`]\.chat-message['"`]\)/);
+        expect(body).toMatch(/\.find\(['"`]\.flavor-text['"`]\)\.text\(''\)/);
+        expect(body).not.toMatch(/html\.parent\(\)\.find\(['"`]\.flavor-text['"`]\)/);
+        expect(body).not.toMatch(/html\.closest\(['"`]\.message-content['"`]\)\.find\(['"`]\.flavor-text['"`]\)/);
     });
 
     it("emits preRenderChatMessageContent BEFORE the child-merge return path — locks in the contract the wm5e worked example relies on", () => {

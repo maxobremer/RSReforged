@@ -207,16 +207,15 @@ export class HooksUtility {
             // and is consumed at D20Roll level, not on the Die class itself.
             if (message.rolls?.length) {
                 let changed = false;
-                const patched = message.rolls.map(roll => {
-                    const json = typeof roll.toJSON === "function" ? roll.toJSON() : roll;
+                const patched = CoreUtility.serializeRolls(message.rolls);
+                for (const json of patched) {
                     for (const term of json.terms ?? []) {
                         if (term.class === "Die") {
                             term.class = "BasicDie";
                             changed = true;
                         }
                     }
-                    return json;
-                });
+                }
                 if (changed) message.updateSource({ rolls: patched });
             }
 
@@ -257,6 +256,12 @@ export class HooksUtility {
 
         Hooks.on("renderChatMessageHTML", (message, html) => {
             const $html = html instanceof HTMLElement ? $(html) : html;
+            // Self-heal before suppressing: if a previous render pass failed before
+            // dnd5e.renderChatMessage could restore the suppressed roll flag (e.g.
+            // another module's render handler threw mid-chain), restore it now so the
+            // in-memory document never diverges across renders.
+            ChatUtility.restoreDnd5eEnrichedRollFlavor(message);
+            ChatUtility.suppressDnd5eEnrichedRollFlavor(message);
             ChatUtility.processChatMessage(message, html);
             BonusManager.init(message, $html);
             if (html instanceof HTMLElement || html[0] instanceof HTMLElement) {
@@ -275,6 +280,7 @@ export class HooksUtility {
         // .message-content innerHTML. RSR's injection for activity cards must therefore
         // happen here, after system.getHTML() has finished rewriting the DOM.
         Hooks.on(HOOKS_DND5E.RENDER_CHAT_MESSAGE, (message, html) => {
+            ChatUtility.restoreDnd5eEnrichedRollFlavor(message);
             ChatUtility.processUsageChatMessage(message, html);
         });
     }

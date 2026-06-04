@@ -4,6 +4,7 @@ import { makeRoll, setupFoundryEnv } from "./helpers/foundry-env.mjs";
 describe("ActivityUtility roll action flow", () => {
     let env;
     let ActivityUtility;
+    let CoreUtility;
     let MODULE_SHORT;
 
     beforeEach(async () => {
@@ -11,6 +12,7 @@ describe("ActivityUtility roll action flow", () => {
         env = await setupFoundryEnv();
         ({ MODULE_SHORT } = await import("../src/module/const.js"));
         ({ ActivityUtility } = await import("../src/utils/activity.js"));
+        ({ CoreUtility } = await import("../src/utils/core.js"));
     });
 
     it("resolves activities from native message methods before manual fallbacks", () => {
@@ -121,6 +123,64 @@ describe("ActivityUtility roll action flow", () => {
         ]);
         expect(message.updatedWith.flags).toBe(message.flags);
         expect(foundry.audio.AudioHelper.play).toHaveBeenCalledWith({ src: "dice.wav" }, true);
+    });
+
+    it("does not manually animate quick activity rolls when Dice So Nice will see the ChatMessage rolls update", async () => {
+        game.dice3d = {
+            isEnabled: vi.fn(() => true),
+            showForRoll: vi.fn()
+        };
+        const attack = makeRoll(env.classes.D20Roll, { formula: "1d20+5", total: 22, faces: 20, results: [17] });
+        const message = new env.classes.TestChatMessage({
+            id: "usage-dsn",
+            flags: {
+                [MODULE_SHORT]: {
+                    renderAttack: true,
+                    rolls: []
+                }
+            }
+        });
+        const tryRollDice3D = vi.spyOn(CoreUtility, "tryRollDice3D");
+
+        vi.spyOn(ActivityUtility, "getAttackFromMessage").mockResolvedValue([attack]);
+
+        await ActivityUtility.runActivityActions(message);
+
+        expect(tryRollDice3D).not.toHaveBeenCalled();
+        expect(game.dice3d.showForRoll).not.toHaveBeenCalled();
+        expect(foundry.audio.AudioHelper.play).not.toHaveBeenCalled();
+        expect(message.updatedWith.rolls).toHaveLength(1);
+    });
+
+    it("manually animates quick activity rolls for legacy Dice So Nice versions that do not watch roll updates", async () => {
+        game.dice3d = {
+            isEnabled: vi.fn(() => true),
+            showForRoll: vi.fn()
+        };
+        // DSN < 5.1.0 only animates rolls present at message creation; rolls appended
+        // via ChatMessage.update need the manual showForRoll path.
+        game.modules.get.mockImplementation((name) => name === "dice-so-nice"
+            ? { active: true, version: "4.6.3" }
+            : { active: false, version: "test" });
+        const attack = makeRoll(env.classes.D20Roll, { formula: "1d20+5", total: 22, faces: 20, results: [17] });
+        const message = new env.classes.TestChatMessage({
+            id: "usage-dsn-legacy",
+            flags: {
+                [MODULE_SHORT]: {
+                    renderAttack: true,
+                    rolls: []
+                }
+            }
+        });
+        const tryRollDice3D = vi.spyOn(CoreUtility, "tryRollDice3D").mockResolvedValue(true);
+
+        vi.spyOn(ActivityUtility, "getAttackFromMessage").mockResolvedValue([attack]);
+
+        await ActivityUtility.runActivityActions(message);
+
+        expect(tryRollDice3D).toHaveBeenCalledWith([attack], "usage-dsn-legacy");
+        expect(foundry.audio.AudioHelper.play).not.toHaveBeenCalled();
+        expect(message.updatedWith.rolls).toHaveLength(1);
     });
 
     it("derives render flags at render time when preCreate activity resolution failed", async () => {

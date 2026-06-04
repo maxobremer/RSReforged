@@ -2,7 +2,7 @@ import { MODULE_SHORT } from "../module/const.js";
 import { MODULE_MIDI } from "../module/integration.js";
 import { ChatUtility } from "./chat.js";
 import { CoreUtility } from "./core.js";
-import { ROLL_TYPE } from "./roll.js";
+import { ROLL_TYPE, RollUtility } from "./roll.js";
 import { SETTING_NAMES, SettingsUtility } from "./settings.js";
 
 export class ActivityUtility {
@@ -174,7 +174,7 @@ export class ActivityUtility {
             const attackRolls = ActivityUtility._extractRolls(rawAttack);
 
             if (attackRolls.length > 0) {
-                currentRolls = _injectRollsToArray(currentRolls, attackRolls, CONFIG.Dice.D20Roll);
+                currentRolls = RollUtility.mergeRollsByType(currentRolls, attackRolls, CONFIG.Dice.D20Roll);
                 newRolls.push(...attackRolls);
                 // dual flag means a multi-roll was enforced by ALWAYS_ROLL_MULTIROLL;
                 // in that case isCritical is determined later during rendering.
@@ -191,7 +191,7 @@ export class ActivityUtility {
             const damageRolls = ActivityUtility._extractRolls(rawDamage);
 
             if (damageRolls.length > 0) {
-                currentRolls = _injectRollsToArray(currentRolls, damageRolls, CONFIG.Dice.DamageRoll);
+                currentRolls = RollUtility.mergeRollsByType(currentRolls, damageRolls, CONFIG.Dice.DamageRoll);
                 newRolls.push(...damageRolls);
             }
         }
@@ -201,25 +201,15 @@ export class ActivityUtility {
             const formulaRolls = ActivityUtility._extractRolls(rawFormula);
 
             if (formulaRolls.length > 0) {
-                currentRolls = _injectRollsToArray(currentRolls, formulaRolls, CONFIG.Dice.BasicRoll);
+                currentRolls = RollUtility.mergeRollsByType(currentRolls, formulaRolls, CONFIG.Dice.BasicRoll);
                 newRolls.push(...formulaRolls);
             }
         }
 
-        // dnd5e's rollAttack/rollDamage/rollFormula were called with create: false, so no
-        // ChatMessage was created for these rolls and Dice So Nice's createChatMessage
-        // hook never fires. Trigger the 3D animation manually and fall back to playing
-        // the dice sound when DSN is absent. Mirrors the retro-crit pattern in chat.js.
-        if (newRolls.length > 0) {
-            await CoreUtility.tryRollDice3D(newRolls, message.id);
-
-            if (!game.dice3d || !game.dice3d.isEnabled()) {
-                CoreUtility.playRollSound();
-            }
-        }
+        await _animateNewRolls(newRolls, message);
 
         message.flags[MODULE_SHORT].processed = true;
-        const serializedRolls = currentRolls.map(r => r.toJSON ? r.toJSON() : r);
+        const serializedRolls = CoreUtility.serializeRolls(currentRolls);
         message.flags[MODULE_SHORT].rolls = serializedRolls;
 
         const attackRoll = currentRolls.find(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll" || r.constructor?.name === "D20Roll");
@@ -252,24 +242,16 @@ export class ActivityUtility {
                 const damageRolls = ActivityUtility._extractRolls(rawDamage);
 
                 if (damageRolls.length > 0) {
-                    currentRolls = _injectRollsToArray(currentRolls, damageRolls, CONFIG.Dice.DamageRoll);
+                    currentRolls = RollUtility.mergeRollsByType(currentRolls, damageRolls, CONFIG.Dice.DamageRoll);
                     newRolls.push(...damageRolls);
                 }
                 break;
             }
         }
 
-        // create: false suppresses the chat-message-creation path that Dice So Nice hooks
-        // into; trigger the 3D animation manually and play the dice sound as a fallback.
-        if (newRolls.length > 0) {
-            await CoreUtility.tryRollDice3D(newRolls, message.id);
+        await _animateNewRolls(newRolls, message);
 
-            if (!game.dice3d || !game.dice3d.isEnabled()) {
-                CoreUtility.playRollSound();
-            }
-        }
-
-        const serializedRolls = currentRolls.map(r => r.toJSON ? r.toJSON() : r);
+        const serializedRolls = CoreUtility.serializeRolls(currentRolls);
         message.flags[MODULE_SHORT].rolls = serializedRolls;
 
         await ChatUtility.updateChatMessage(message, {
@@ -423,28 +405,25 @@ export class ActivityUtility {
 }
 
 /**
- * Merge a set of new rolls into an existing roll array, first removing any rolls of the
- * same class so that re-rolls replace rather than duplicate the previous result.
+ * Trigger the audio/visual feedback for freshly added quick rolls. The caller's
+ * subsequent ChatMessage.update includes the new rolls: Dice So Nice >= 5.1.0 watches
+ * that update and animates the added rolls itself, so manually calling showForRoll as
+ * well would double-animate the dice (#18). Older DSN versions only animate on message
+ * creation, so trigger the 3D roll manually for them; with no enabled DSN at all, fall
+ * back to playing the dice sound.
  *
- * @param {Roll[]|object[]} existingRolls  Current serialised or live roll array.
- * @param {Roll[]}          newRolls       Fresh rolls to inject.
- * @param {typeof Roll}     cleanType      Roll class whose existing entries to evict.
- * @returns {Roll[]}
+ * @param {Roll[]} newRolls The rolls added in this action.
+ * @param {ChatMessage} message The message the rolls are persisted to.
  */
-function _injectRollsToArray(existingRolls, newRolls, cleanType) {
-    if (!CoreUtility.isIterable(newRolls)) {
-        return existingRolls;
+async function _animateNewRolls(newRolls, message) {
+    if (newRolls.length === 0) return;
+
+    if (!game.dice3d || !game.dice3d.isEnabled()) {
+        CoreUtility.playRollSound();
+        return;
     }
 
-    let processedRolls = Array.from(existingRolls);
-
-    if (cleanType) {
-        processedRolls = processedRolls.filter(r => {
-            const isTargetType = r instanceof cleanType || r.class === cleanType.name;
-            return !isTargetType;
-        });
+    if (!CoreUtility.dice3dAnimatesRollUpdates()) {
+        await CoreUtility.tryRollDice3D(newRolls, message.id);
     }
-
-    processedRolls.push(...newRolls);
-    return processedRolls;
 }

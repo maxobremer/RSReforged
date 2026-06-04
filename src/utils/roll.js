@@ -244,9 +244,58 @@ export class RollUtility {
     static getCritTypeForDie(die, options = {}) {
         if (!die) return null;
 
-        const { crit, fumble } = _countCritsFumbles(die, options)		
+        const { crit, fumble } = _countCritsFumbles(die, options)
 
         return _getCritResult(crit, fumble);
+    }
+
+    /**
+     * Checks if a roll (live instance or serialised flag data) is of a given roll class.
+     * Serialised rolls carry the class name in `.class`; live rolls match via instanceof
+     * or, for cross-realm/test instances, the constructor name.
+     * @param {Roll|object} roll The roll or serialised roll data to test.
+     * @param {typeof Roll} rollClass The roll class to test against.
+     * @returns {Boolean} Whether the roll is of the given class.
+     */
+    static isRollOfType(roll, rollClass) {
+        if (!roll || !rollClass) return false;
+        return roll instanceof rollClass || roll.class === rollClass.name || roll.constructor?.name === rollClass.name;
+    }
+
+    /**
+     * Merge a set of new rolls into an existing roll array, replacing any rolls of the
+     * same class (at their original position) so that re-rolls replace rather than
+     * duplicate the previous result. When there is nothing to merge, the existing rolls
+     * are kept untouched — same-type entries are never evicted without a replacement
+     * (e.g. a child message whose rolls failed to deserialize).
+     * @param {Roll[]|object[]} existingRolls Current serialised or live roll array.
+     * @param {Roll[]} newRolls Fresh rolls to merge in.
+     * @param {typeof Roll} cleanType Roll class whose existing entries to replace.
+     * @returns {Roll[]|object[]} The merged roll array.
+     */
+    static mergeRollsByType(existingRolls, newRolls, cleanType) {
+        const existing = Array.from(existingRolls ?? []);
+        const fresh = CoreUtility.isIterable(newRolls) ? Array.from(newRolls) : [];
+
+        if (fresh.length === 0) return existing;
+        if (!cleanType) return [...existing, ...fresh];
+
+        const merged = [];
+        let inserted = false;
+
+        for (const roll of existing) {
+            if (RollUtility.isRollOfType(roll, cleanType)) {
+                if (!inserted) {
+                    merged.push(...fresh);
+                    inserted = true;
+                }
+                continue;
+            }
+            merged.push(roll);
+        }
+
+        if (!inserted) merged.push(...fresh);
+        return merged;
     }
 }
 

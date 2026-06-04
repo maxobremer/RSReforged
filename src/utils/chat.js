@@ -26,6 +26,26 @@ export class ChatUtility {
         return Array.from(message.rolls || []);
     }
 
+    static suppressDnd5eEnrichedRollFlavor(message) {
+        if (!message) return;
+        if (ChatUtility.getMessageType(message) !== ROLL_TYPE.ACTIVITY) return;
+        if (!message.flags?.[MODULE_SHORT]?.quickRoll || !message.flags?.[MODULE_SHORT]?.processed) return;
+        if (!message.flags?.dnd5e?.item || !message.flags?.dnd5e?.roll) return;
+        if (message._rsrSuppressedDnd5eRoll) return;
+
+        message._rsrSuppressedDnd5eRoll = message.flags.dnd5e.roll;
+        delete message.flags.dnd5e.roll;
+    }
+
+    static restoreDnd5eEnrichedRollFlavor(message) {
+        if (!message?._rsrSuppressedDnd5eRoll) return;
+
+        message.flags ??= {};
+        message.flags.dnd5e ??= {};
+        message.flags.dnd5e.roll ??= message._rsrSuppressedDnd5eRoll;
+        delete message._rsrSuppressedDnd5eRoll;
+    }
+
     static async processChatMessage(message, html) {
         if (!message || !html) return;
         
@@ -172,7 +192,7 @@ export class ChatUtility {
     static async updateChatMessage(message, update = {}, context = {}) {
         if (message instanceof ChatMessage) {
             if (update.rolls && Array.isArray(update.rolls)) {
-                update.rolls = update.rolls.map(r => (r && typeof r.toJSON === "function") ? r.toJSON() : r);
+                update.rolls = CoreUtility.serializeRolls(update.rolls);
             }
             if (!update.flags) update.flags = message.flags;
             await message.update(update, context);
@@ -337,7 +357,7 @@ async function _enforceDualRolls(message) {
     }
     
     message.flags[MODULE_SHORT].dual = dual;
-    message.flags[MODULE_SHORT].rolls = newRolls.map(r => r.toJSON ? r.toJSON() : r);
+    message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(newRolls);
     return newRolls;
 }
 
@@ -347,6 +367,25 @@ function _safeInsert(sectionHTML, targetHTML) {
     } else {
         sectionHTML.insertBefore(targetHTML);
     }
+}
+
+/**
+ * Render dnd5e dice markup from roll.toMessage() data without triggering the full
+ * enriched-roll-flavor path. dnd5e's _enrichChatCard removes .message-header
+ * .flavor-text when the synthetic message resolves an item + roll; toMessage()
+ * payloads often omit that node, causing the same null.remove() failure.
+ *
+ * @param {object} chatData  Data returned by Roll#toMessage / DamageRoll.toMessage.
+ * @returns {Promise<JQuery>} Rendered message root (caller typically .find('.dice-roll')).
+ */
+async function _renderDnd5eDiceFragment(chatData) {
+    const ChatMessage5e = CONFIG.ChatMessage.documentClass;
+    const prepared = foundry.utils.deepClone(chatData);
+    prepared.flags ??= {};
+    if (prepared.flags.dnd5e) {
+        delete prepared.flags.dnd5e.item;
+    }
+    return $(await new ChatMessage5e(prepared).renderHTML());
 }
 
 function _snapshotSupplements(html) {
@@ -475,7 +514,14 @@ async function _injectContent(message, type, html) {
 
                 if (useRsrDamageButtons) {
                     const enricher = html.find('.dice-roll');
-                    html.parent().find('.flavor-text').text('');
+                    // Foundry core renders a roll message's flavor as .flavor-text inside
+                    // .message-header — a SIBLING of the .message-content node that `html`
+                    // is here — so the clear must climb to the message root to reach it.
+                    // Scoping to .chat-message (rather than .parent()) keeps the clear from
+                    // leaking into other messages when `html` is a fallback root with no
+                    // .message-content wrapper.
+                    const messageRoot = html.closest('.chat-message');
+                    (messageRoot.length ? messageRoot : html).find('.flavor-text').text('');
                     html.prepend('<div class="dnd5e2 chat-card"></div>');
                     html.find('.chat-card').append(enricher);
 
@@ -518,9 +564,14 @@ async function _injectContent(message, type, html) {
                 
                 let newParentRolls = ChatUtility.getMessageRolls(parent);
                 let newMsgRolls = ChatUtility.getMessageRolls(message);
-                newParentRolls.push(...newMsgRolls);
+                const cleanType = type === ROLL_TYPE.ATTACK
+                    ? CONFIG.Dice.D20Roll
+                    : type === ROLL_TYPE.DAMAGE
+                        ? CONFIG.Dice.DamageRoll
+                        : null;
+                newParentRolls = RollUtility.mergeRollsByType(newParentRolls, newMsgRolls, cleanType);
 
-                const serializedRolls = newParentRolls.map(r => r.toJSON ? r.toJSON() : r);
+                const serializedRolls = CoreUtility.serializeRolls(newParentRolls);
                 parent.flags[MODULE_SHORT].rolls = serializedRolls;
 
                 ChatUtility.updateChatMessage(parent, {
@@ -653,7 +704,6 @@ async function _injectContent(message, type, html) {
 }
 
 async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
-    const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message);
     
     const roll = rolls.find(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll" || r.constructor?.name === "D20Roll");
@@ -679,7 +729,7 @@ async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
     // before renderHTML() is ever reached. roll.toMessage() already sets type:"roll" which
     // is a valid Foundry V14 type, so we leave it alone.
 
-    const rollHTML = $(await new ChatMessage5e(chatData).renderHTML()).find('.dice-roll');   
+    const rollHTML = (await _renderDnd5eDiceFragment(chatData)).find('.dice-roll');
     rollHTML.find('.dice-total').replaceWith(render);
     rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
 
@@ -706,7 +756,6 @@ async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
 }
 
 async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
-    const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message);
     
     const roll = rolls.find(r => r instanceof CONFIG.Dice.BasicRoll || r.class === "BasicRoll" || r.constructor?.name === "BasicRoll");
@@ -716,7 +765,7 @@ async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
     const chatData = await roll.toMessage({}, { create: false });
     // Foundry V14: see comment in _injectAttackRoll. type:"roll" is set by toMessage().
 
-    const rollHTML = $(await new ChatMessage5e(chatData).renderHTML()).find('.dice-roll');
+    const rollHTML = (await _renderDnd5eDiceFragment(chatData)).find('.dice-roll');
     rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
 
     const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION,
@@ -733,7 +782,6 @@ async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
 }
 
 async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = html } = {}) {
-    const ChatMessage5e = CONFIG.ChatMessage.documentClass;
     const rolls = ChatUtility.getMessageRolls(message).filter(r => r instanceof CONFIG.Dice.DamageRoll || r.class === "DamageRoll" || r.constructor?.name === "DamageRoll");
 
     if (!rolls || rolls.length === 0) return;
@@ -741,7 +789,7 @@ async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = ht
     const chatData = await CONFIG.Dice.DamageRoll.toMessage(rolls, {}, { create: false });
     // Foundry V14: see comment in _injectAttackRoll. type:"roll" is set by toMessage().
 
-    const renderedHTML = $(await new ChatMessage5e(chatData).renderHTML());
+    const renderedHTML = await _renderDnd5eDiceFragment(chatData);
 
     if (mode === "native") {
         let nativeHTML = renderedHTML.find('.message-content').children();
@@ -1025,7 +1073,7 @@ async function _processRetroAdvButtonEvent(message, event) {
                 : ` (${CoreUtility.localize("DND5E.Disadvantage")})`;
         }
 
-        message.flags[MODULE_SHORT].rolls = originalRolls.map(r => r.toJSON ? r.toJSON() : r);
+        message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(originalRolls);
 
         ChatUtility.updateChatMessage(message, { 
             flags: message.flags,
@@ -1089,7 +1137,7 @@ async function _processRetroCritButtonEvent(message, event) {
 
         await CoreUtility.tryRollDice3D(crits, message.id);
 
-        message.flags[MODULE_SHORT].rolls = newRolls.map(r => r.toJSON ? r.toJSON() : r);
+        message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(newRolls);
 
         ChatUtility.updateChatMessage(message, {
             flags: message.flags

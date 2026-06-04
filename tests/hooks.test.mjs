@@ -12,6 +12,10 @@ const state = vi.hoisted(() => ({
     },
     logError: vi.fn(),
     logWarning: vi.fn(),
+    suppressDnd5eEnrichedRollFlavor: vi.fn(),
+    restoreDnd5eEnrichedRollFlavor: vi.fn(),
+    processChatMessage: vi.fn(),
+    processUsageChatMessage: vi.fn(),
     processActivity: vi.fn(),
     processRoll: vi.fn()
 }));
@@ -55,7 +59,14 @@ vi.mock("../src/utils/log.js", () => ({
 }));
 
 vi.mock("../src/utils/bonus.js", () => ({ BonusManager: { init: vi.fn() } }));
-vi.mock("../src/utils/chat.js", () => ({ ChatUtility: { processChatMessage: vi.fn() } }));
+vi.mock("../src/utils/chat.js", () => ({
+    ChatUtility: {
+        suppressDnd5eEnrichedRollFlavor: state.suppressDnd5eEnrichedRollFlavor,
+        restoreDnd5eEnrichedRollFlavor: state.restoreDnd5eEnrichedRollFlavor,
+        processChatMessage: state.processChatMessage,
+        processUsageChatMessage: state.processUsageChatMessage
+    }
+}));
 vi.mock("../src/utils/reroll.js", () => ({ RerollManager: { registerGlobalListener: vi.fn() } }));
 vi.mock("../src/utils/roll.js", () => ({
     KEYBIND_VERSATILE_TWO_HANDED: "versatileTwoHanded",
@@ -112,6 +123,10 @@ describe("HooksUtility preCreateChatMessage quick-roll flags", () => {
         };
         state.logError.mockClear();
         state.logWarning.mockClear();
+        state.suppressDnd5eEnrichedRollFlavor.mockClear();
+        state.restoreDnd5eEnrichedRollFlavor.mockClear();
+        state.processChatMessage.mockClear();
+        state.processUsageChatMessage.mockClear();
         state.processActivity.mockClear();
         state.processRoll.mockClear();
     });
@@ -263,5 +278,52 @@ describe("HooksUtility preCreateChatMessage quick-roll flags", () => {
                 renderDamage: true
             })
         });
+    });
+
+    it("suppresses dnd5e roll metadata before processing renderChatMessageHTML", () => {
+        registerPreCreateHook();
+        const render = state.handlers.get("renderChatMessageHTML");
+        const message = usageMessage({
+            [MODULE_SHORT]: { quickRoll: true, processed: true },
+            dnd5e: {
+                item: { id: "weapon-1" },
+                roll: { type: "attack" }
+            }
+        });
+        const html = {
+            0: {},
+            find: vi.fn(() => ({ length: 0, addClass: vi.fn() }))
+        };
+        globalThis.HTMLElement = class TestHTMLElement {};
+
+        render(message, html);
+
+        expect(state.suppressDnd5eEnrichedRollFlavor).toHaveBeenCalledWith(message);
+        expect(state.processChatMessage).toHaveBeenCalledWith(message, html);
+        expect(state.suppressDnd5eEnrichedRollFlavor.mock.invocationCallOrder[0])
+            .toBeLessThan(state.processChatMessage.mock.invocationCallOrder[0]);
+
+        // Self-heal: a restore runs BEFORE the suppress so a stale suppression left by
+        // a render pass that failed mid-chain (dnd5e.renderChatMessage never fired) is
+        // repaired instead of permanently desyncing the in-memory document.
+        expect(state.restoreDnd5eEnrichedRollFlavor).toHaveBeenCalledWith(message);
+        expect(state.restoreDnd5eEnrichedRollFlavor.mock.invocationCallOrder[0])
+            .toBeLessThan(state.suppressDnd5eEnrichedRollFlavor.mock.invocationCallOrder[0]);
+    });
+
+    it("restores dnd5e roll metadata before processing dnd5e.renderChatMessage", () => {
+        registerPreCreateHook();
+        const render = state.handlers.get("dnd5e.renderChatMessage");
+        const message = usageMessage({
+            [MODULE_SHORT]: { quickRoll: true, processed: true }
+        });
+        const html = {};
+
+        render(message, html);
+
+        expect(state.restoreDnd5eEnrichedRollFlavor).toHaveBeenCalledWith(message);
+        expect(state.processUsageChatMessage).toHaveBeenCalledWith(message, html);
+        expect(state.restoreDnd5eEnrichedRollFlavor.mock.invocationCallOrder[0])
+            .toBeLessThan(state.processUsageChatMessage.mock.invocationCallOrder[0]);
     });
 });

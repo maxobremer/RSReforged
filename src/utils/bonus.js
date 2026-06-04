@@ -1,5 +1,6 @@
 import { MODULE_SHORT } from "../module/const.js";
 import { ChatUtility } from "./chat.js";
+import { CoreUtility } from "./core.js";
 import { LogUtility } from "./log.js";
 
 const { ApplicationV2 } = foundry.applications.api;
@@ -227,7 +228,7 @@ export class BonusManager {
             currentRolls[targetRollIndex] = newRoll;
 
             // Persist via flags so the RSR card re-renders from the correct data source.
-            const serialised = currentRolls.map(r => r.toJSON ? r.toJSON() : r);
+            const serialised = CoreUtility.serializeRolls(currentRolls);
             if (message.flags?.[MODULE_SHORT]) {
                 message.flags[MODULE_SHORT].rolls = serialised;
                 await ChatUtility.updateChatMessage(message, { flags: message.flags });

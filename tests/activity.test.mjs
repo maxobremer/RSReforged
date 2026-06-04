@@ -4,13 +4,25 @@ vi.mock("../src/utils/chat.js", () => ({
     ChatUtility: { getActorFromMessage: vi.fn(() => ({ id: "actor1", items: { get: vi.fn((id) => id ? { id } : undefined) } })) }
 }));
 vi.mock("../src/utils/core.js", () => ({
-    CoreUtility: { hasModule: vi.fn(() => false), tryRollDice3D: vi.fn(), playRollSound: vi.fn() }
+    CoreUtility: {
+        hasModule: vi.fn(() => false),
+        tryRollDice3D: vi.fn(),
+        playRollSound: vi.fn(),
+        dice3dAnimatesRollUpdates: vi.fn(() => true),
+        serializeRolls: vi.fn((rolls) => Array.from(rolls ?? []))
+    }
 }));
 vi.mock("../src/utils/settings.js", () => ({
     SETTING_NAMES: {},
     SettingsUtility: { getSettingValue: vi.fn(() => false) }
 }));
-vi.mock("../src/utils/roll.js", () => ({ ROLL_TYPE: { DAMAGE: "damage" } }));
+vi.mock("../src/utils/roll.js", () => ({
+    ROLL_TYPE: { DAMAGE: "damage" },
+    RollUtility: {
+        isRollOfType: vi.fn(() => false),
+        mergeRollsByType: vi.fn((existingRolls, newRolls) => [...(existingRolls ?? []), ...(newRolls ?? [])])
+    }
+}));
 vi.mock("../src/module/const.js", () => ({ MODULE_SHORT: "rsr" }));
 vi.mock("../src/module/integration.js", () => ({ MODULE_MIDI: "midi-qol" }));
 
