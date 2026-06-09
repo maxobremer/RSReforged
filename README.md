@@ -140,19 +140,25 @@ Add an Active Effect change on the actor (or on an item that grants the effect) 
 Effect Value format:
 
 ```
-<formula>; type:<roll-type[,roll-type...]>; consume:<origin|item-id|item-name>; once
+<formula>; type:<roll-type[,roll-type...]>; random:<type,type,...>; consume:<origin|item-id|item-name>; once
 ```
 
 | Token | Meaning |
 |---|---|
-| `<formula>` | A Roll formula. May reference `@actor.system.*` etc. |
+| `<formula>` | A Roll formula. May reference `@actor.system.*` etc. Omit it alongside a damage-type token to add `0` of that type — a pure type tag. |
 | `type:check` | Ability, skill, tool, and initiative checks |
 | `type:save` | Saves, including death saves and concentration |
 | `type:attack`, `type:damage`, `type:initiative` | That roll type only |
 | `type:any` (default) | Any roll type |
+| `<damageType>` | A bare dnd5e damage type (e.g. `fire`). Fixes the bonus to that type on damage rolls — no dialog, no randomness. |
+| `random:<type,type,...>` | On a damage roll, pick one of the listed types at random each time the bonus is applied. |
+| `choice:<type,type,...>` | On a damage roll, show a dropdown of the listed types in the bonus dialog so the player picks. |
+| `fixed:<type>` | On a damage roll, uses the damage type each time the bonus is applied. |
 | `consume:origin` | Consume one charge of the originating item when applied |
 | `consume:<id-or-name>` | Consume one charge of a different item |
 | `once` | Delete the effect after a single use |
+
+Damage-type tokens accept dnd5e damage type keys (`acid`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `poison`, `psychic`, `radiant`, `thunder`, `bludgeoning`, `piercing`, `slashing`). They apply only to damage rolls; on any other roll type the bonus is added untyped.
 
 Examples:
 
