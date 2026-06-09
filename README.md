@@ -153,17 +153,16 @@ Effect Value format:
 | `<damageType>` | A bare dnd5e damage type (e.g. `fire`). Fixes the bonus to that type on damage rolls — no dialog, no randomness. |
 | `random:<type,type,...>` | On a damage roll, pick one of the listed types at random each time the bonus is applied. |
 | `choice:<type,type,...>` | On a damage roll, show a dropdown of the listed types in the bonus dialog so the player picks. |
-| `fixed:<type>` | On a damage roll, uses the damage type each time the bonus is applied. |
 | `consume:origin` | Consume one charge of the originating item when applied |
 | `consume:<id-or-name>` | Consume one charge of a different item |
 | `once` | Delete the effect after a single use |
 
-Damage-type tokens accept dnd5e damage type keys (`acid`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `poison`, `psychic`, `radiant`, `thunder`, `bludgeoning`, `piercing`, `slashing`). They apply only to damage rolls; on any other roll type the bonus is added untyped.
+Damage-type tokens accept dnd5e damage type keys (`acid`, `cold`, `fire`, `force`, `lightning`, `necrotic`, `poison`, `psychic`, `radiant`, `thunder`, `bludgeoning`, `piercing`, `slashing`). They apply only to damage rolls; on any other roll type the bonus is added untyped. (for example `2d6; type: check, damage;  lightning` would add 2d6 to either a skill check or 2d6 lightning damage to a damage roll)
 
 Examples:
 
 - **Bless:** `1d4; type:check, save, attack` (no consumption, since Bless is a duration spell)
-- **Bardic Inspiration (d8):** `1d8; type:any; consume:origin; once`
+- **Bardic Inspiration (d8):** `1d8; type:check, save, attack; consume:origin; once`
 - **Guidance:** `1d4; type:check; consume:origin; once`
 
 ## Known issues
