@@ -119,19 +119,32 @@ export class BonusManager {
                 }
 
                 // Damage-type keywords (meaningful on damage rolls only):
+                //   <damageType>             -> a bare dnd5e damage type key (e.g. "fire") fixes
+                //                               the bonus to that type, with no dialog or rolling
                 //   random: <type,type,...>  -> pick one of the listed types at random on apply
                 //   choice: <type,type,...>  -> player picks one of the listed types in the dialog
-                // The listed values are dnd5e damage types (fire, cold, acid, ...). With no
+                // The listed values are dnd5e damage type keys (fire, cold, acid, ...). With no
                 // explicit formula the bonus contributes 0 of the resolved type (a pure tag).
+                const damageTypeKeys = new Set(Object.keys(CONFIG.DND5E?.damageTypes ?? {}));
                 const randomPart = parts.find(p => p.toLowerCase().startsWith("random:"));
                 const choicePart = parts.find(p => p.toLowerCase().startsWith("choice:"));
-                const damagePart = randomPart ?? choicePart;
-                const damageMode = randomPart ? "random" : (choicePart ? "choice" : null);
+                // A standalone part that is exactly a known damage type key (e.g. "fire").
+                const fixedTypePart = parts.find(p => damageTypeKeys.has(p.toLowerCase()));
+
+                let damageMode = null;
                 let damageTypeOptions = [];
-                if (damagePart) {
-                    // Everything after the first colon is the comma-separated type list.
-                    damageTypeOptions = damagePart.slice(damagePart.indexOf(":") + 1)
+                if (randomPart) {
+                    damageMode = "random";
+                    damageTypeOptions = randomPart.slice(randomPart.indexOf(":") + 1)
                         .split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+                } else if (choicePart) {
+                    damageMode = "choice";
+                    damageTypeOptions = choicePart.slice(choicePart.indexOf(":") + 1)
+                        .split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+                } else if (fixedTypePart) {
+                    // Bare damage type: a single fixed type, resolved with no dialog.
+                    damageMode = "fixed";
+                    damageTypeOptions = [fixedTypePart.toLowerCase()];
                 }
 
                 const formulaParts = parts.filter(p => 
@@ -139,7 +152,8 @@ export class BonusManager {
                     !p.toLowerCase().startsWith("consume") && 
                     p.toLowerCase() !== "once" &&
                     !p.toLowerCase().startsWith("random:") &&
-                    !p.toLowerCase().startsWith("choice:")
+                    !p.toLowerCase().startsWith("choice:") &&
+                    !damageTypeKeys.has(p.toLowerCase())
                 );
                 
                 let rawFormula = formulaParts.length > 0 ? formulaParts[0] : "0";
@@ -361,6 +375,11 @@ class BonusSelector extends ApplicationV2 {
                     <div style="margin-top: 6px; margin-left: 44px; font-size: 0.8em; opacity: 0.7;">
                         <i class="fas fa-dice"></i> Random type: ${opts.join(", ")}
                     </div>`;
+            } else if (b.damageMode === "fixed" && opts.length) {
+                typeUI = `
+                    <div style="margin-top: 6px; margin-left: 44px; font-size: 0.8em; opacity: 0.7;">
+                        <i class="fas fa-tag"></i> ${opts[0].charAt(0).toUpperCase() + opts[0].slice(1)} damage
+                    </div>`;
             }
 
             html += `
@@ -414,6 +433,8 @@ class BonusSelector extends ApplicationV2 {
             damageType = formData.object[`damageType-${index}`] || opts[0] || null;
         } else if (bonus?.damageMode === "random" && opts.length) {
             damageType = opts[Math.floor(Math.random() * opts.length)];
+        } else if (bonus?.damageMode === "fixed" && opts.length) {
+            damageType = opts[0];
         }
 
         await this.onSubmitCallback({ isCustom: false, index, damageType });
