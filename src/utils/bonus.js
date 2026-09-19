@@ -31,12 +31,16 @@ export class BonusManager {
         const hasAttackSection = $html.find('.rsr-section-attack').length > 0;
         const hasDamageSection = $html.find('.rsr-section-damage').length > 0;
 
-        const isDnd5eRoll = !!message.flags.dnd5e?.roll?.type;
-        const isInitiative = message.flags.core?.initiativeRoll || 
+        // dnd5e 6.0 identifies rolls by message type + system data (see
+        // ChatUtility.getMessageType); initiative rolls are "check" messages with
+        // system.type "initiative" (ChatMessage5e#_preCreate).
+        const messageRollType = ChatUtility.getMessageType(message);
+        const isInitiative = !!message.flags?.core?.initiativeRoll ||
+                             message.system?.type === "initiative" ||
                              (message.flavor && message.flavor.includes("Initiative")) ||
                              $html.find('.dice-flavor').text().includes("Initiative");
 
-        if (!hasAttackSection && !hasDamageSection && !isDnd5eRoll && !isInitiative) return false;
+        if (!hasAttackSection && !hasDamageSection && !messageRollType && !isInitiative) return false;
 
         let injected = false;
 
@@ -52,7 +56,7 @@ export class BonusManager {
 
         let rollType = null;
         if (isInitiative) rollType = "initiative";
-        else if (isDnd5eRoll) rollType = message.flags.dnd5e.roll.type;
+        else if (messageRollType) rollType = messageRollType;
 
         const validTypes = ["skill", "tool", "ability", "save", "death", "concentration", "initiative"];
 
@@ -105,7 +109,10 @@ export class BonusManager {
         const candidateEffects = actorEffects.filter(e => !e.disabled && !e.isSuppressed);
 
         for (const effect of candidateEffects) {
-            const changes = effect.changes.filter(c => c.key.trim() === AE_BONUS_FLAG);
+            // Foundry V14 ActiveEffect v2 stores changes in system data (`system.changes`);
+            // `effect.changes` is kept as an accessor.
+            const allChanges = Array.from(effect.changes ?? effect.system?.changes ?? []);
+            const changes = allChanges.filter(c => c?.key?.trim() === AE_BONUS_FLAG);
             for (const change of changes) {
                 const parsed = BonusManager.parseBonusChange(change.value, type, rollData);
                 if (!parsed) continue;

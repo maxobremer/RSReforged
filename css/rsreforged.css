@@ -335,3 +335,40 @@
     opacity: 0.75;
     font-size: 0.9em;
 }
+
+/* ==========================================
+   dnd5e 6.x chat cards
+   ========================================== */
+
+/* dnd5e 6 lays out `.card-header` in compact (system-typed) messages as a flex row for
+   its item icon + title. RSR's section blocks reuse that class, so restore block layout
+   for them. */
+.message.compact section.card-header[class*="rsr-section-"],
+.chat-message.compact section.card-header[class*="rsr-section-"] {
+	display: block;
+}
+
+/* RSR's classic roll replaces dnd5e 6's compact roll button inside `section.icon-row`. */
+section.icon-row > .dice-roll.rsr-roll {
+	flex: 1;
+	min-width: 0;
+}
+
+.rsr-attack-targets {
+	margin-top: 0.25rem;
+}
+
+.rsr-card-buttons {
+	display: flex;
+	gap: 0.25rem;
+	margin: 0.25rem 0;
+}
+
+.rsr-card-buttons > button {
+	flex: 1;
+}
+
+.rsr-native-damage > damage-application {
+	display: block;
+	margin-top: 0.25rem;
+}
