@@ -30,26 +30,6 @@ export class ChatUtility {
         return Array.from(message.rolls || []);
     }
 
-    static suppressDnd5eEnrichedRollFlavor(message) {
-        if (!message) return;
-        if (ChatUtility.getMessageType(message) !== ROLL_TYPE.ACTIVITY) return;
-        if (!message.flags?.[MODULE_SHORT]?.quickRoll || !message.flags?.[MODULE_SHORT]?.processed) return;
-        if (!message.flags?.dnd5e?.item || !message.flags?.dnd5e?.roll) return;
-        if (message._rsrSuppressedDnd5eRoll) return;
-
-        message._rsrSuppressedDnd5eRoll = message.flags.dnd5e.roll;
-        delete message.flags.dnd5e.roll;
-    }
-
-    static restoreDnd5eEnrichedRollFlavor(message) {
-        if (!message?._rsrSuppressedDnd5eRoll) return;
-
-        message.flags ??= {};
-        message.flags.dnd5e ??= {};
-        message.flags.dnd5e.roll ??= message._rsrSuppressedDnd5eRoll;
-        delete message._rsrSuppressedDnd5eRoll;
-    }
-
     static async processChatMessage(message, html) {
         if (!message || !html) return;
         
@@ -71,27 +51,30 @@ export class ChatUtility {
                 if (message._rsrIsProcessing) return;
                 message._rsrIsProcessing = true;
 
-                if (CoreUtility.hasModule(MODULE_MIDI)) {
-                    const activityType = ChatUtility.getActivityType(message);
-                    if (activityType == ROLL_TYPE.ATTACK || (activityType == ROLL_TYPE.ABILITY_SAVE && message.flags[MODULE_SHORT].renderDamage)) {
-                        message.flags[MODULE_SHORT].processed = true;
+                try {
+                    if (CoreUtility.hasModule(MODULE_MIDI)) {
+                        const activityType = ChatUtility.getActivityType(message);
+                        if (activityType == ROLL_TYPE.ATTACK || (activityType == ROLL_TYPE.ABILITY_SAVE && message.flags[MODULE_SHORT].renderDamage)) {
+                            message.flags[MODULE_SHORT].processed = true;
+                        } else {
+                            await ActivityUtility.runActivityActions(message);
+                        }
                     } else {
                         await ActivityUtility.runActivityActions(message);
-                    }  
-                } else {
-                    await ActivityUtility.runActivityActions(message);
-                }                
+                    }
+                } catch (err) {
+                    // Never leave the card hidden (rsr-hide) behind a failed roll.
+                    LogUtility.logError(`Failed to run activity rolls: ${err?.message ?? err}`, { ui: false });
+                    console.error(err);
+                    message._rsrIsProcessing = false;
+                    $(html).removeClass("rsr-hide");
+                }
             }
             return;
         }
 
-        // dnd5e 5.3.0: For usage (ACTIVITY) messages, ChatMessage5e.renderHTML() calls
-        // this.system.getHTML() AFTER firing the renderChatMessageHTML hook. system.getHTML()
-        // completely replaces .message-content innerHTML with the rendered usage-card template,
-        // destroying any content RSR injects here. RSR's injection for usage cards is therefore
-        // deferred to the dnd5e.renderChatMessage hook (via processUsageChatMessage), which
-        // fires after system.getHTML() has finished and the DOM is stable.
-        if (type === ROLL_TYPE.ACTIVITY) return;
+        // Usage (ACTIVITY) cards have their own pipeline (re-tracking, tray state).
+        if (type === ROLL_TYPE.ACTIVITY) return ChatUtility.processUsageChatMessage(message, html);
 
         if (game.dice3d && game.dice3d.isEnabled() && message._dice3danimating) {
             await $(html).addClass("rsr-hide");
@@ -135,12 +118,10 @@ export class ChatUtility {
 
     /**
      * Process a usage (ACTIVITY) chat message after dnd5e's system.getHTML() has rewritten
-     * the card content. Called from the dnd5e.renderChatMessage hook, which fires at the
-     * end of ChatMessage5e.renderHTML() after system.getHTML() has stabilised the DOM.
-     *
-     * This is the correct injection point for usage cards in dnd5e 5.3.0. The
-     * renderChatMessageHTML hook fires too early — dnd5e overwrites the DOM immediately
-     * after it returns.
+     * the card content. Reached through processChatMessage from the dnd5e.renderChatMessage
+     * hook, which fires at the end of ChatMessage5e#renderHTML() once system.getHTML() has
+     * rendered usage-card.hbs into `.message-content`. The renderChatMessageHTML hook fires
+     * too early — dnd5e overwrites the DOM immediately after it returns.
      *
      * @param {ChatMessage5e} message  The chat message being rendered.
      * @param {HTMLElement}   html     The rendered message element (plain HTMLElement in V14).
@@ -154,9 +135,20 @@ export class ChatUtility {
         const type = ChatUtility.getMessageType(message);
         if (type !== ROLL_TYPE.ACTIVITY) return;
 
-        if (!message.isContentVisible) return;
+        const $html = $(html);
 
-        const $html = html instanceof HTMLElement ? $(html) : html;
+        if (!message.isContentVisible) {
+            $html.removeClass("rsr-hide");
+            return;
+        }
+
+        // dnd5e 6 MessageRegistry entries are rebuilt from `_source.system.origin` on load,
+        // which a usage card never has; re-track processed attack cards so
+        // registry.messages.get(<cardId>, "attack") keeps resolving (see
+        // ActivityUtility._registerCardAsAttack).
+        if (flags.renderAttack && ChatUtility.getMessageRolls(message).some(r => RollUtility.isRollOfType(r, CONFIG.Dice.D20Roll))) {
+            ActivityUtility.trackCardAsAttack(message);
+        }
 
         if (game.dice3d && game.dice3d.isEnabled() && message._dice3danimating) {
             await $html.addClass("rsr-hide");
@@ -200,6 +192,20 @@ export class ChatUtility {
                 update.rolls = CoreUtility.serializeRolls(update.rolls);
             }
             if (!update.flags) update.flags = message.flags;
+
+            // dnd5e 6 reads a card's rolls from `message.rolls` (the native
+            // <damage-application> tray, the attack->damage registry lookup). Keep the
+            // native rolls of RSR usage cards in step with RSR's authoritative flag copy
+            // after retroactive changes (crit, advantage, damage type, bonus, reroll).
+            // Skipped while a forced dual roll is pending (ALWAYS_ROLL_MULTIROLL): its
+            // un-kept 2d20 would total both dice.
+            const rsrFlags = update.flags?.[MODULE_SHORT];
+            if (update.rolls === undefined && message.type === "usage"
+                && Array.isArray(rsrFlags?.rolls) && rsrFlags.processed && !rsrFlags.dual) {
+                update.rolls = CoreUtility.serializeRolls(rsrFlags.rolls);
+            }
+
+            Object.assign(update, ActivityUtility.consumePendingTargetsUpdate(message));
             await message.update(update, context);
         }
     }
@@ -211,59 +217,72 @@ export class ChatUtility {
      *
      * RSR keeps authoritative rolls in flags.rsreforged.rolls and renders from them, but
      * condition modules (AC5e) and dnd5e's native attack->damage association read the
-     * native message.rolls through the registry. Without this re-sync they would resolve
-     * the *pre-mutation* attack roll (e.g. the flat d20 from before retro advantage),
-     * silently mis-evaluating advantage-conditioned effects on a later damage roll.
-     *
-     * No-ops unless the card self-registered under the "attack" hook
-     * (flags.dnd5e.originatingMessage === its own id), so it is safe to call after any
-     * roll mutation. Mirrors ActivityUtility._registerCardAsAttack: refresh the live
-     * document's rolls in-memory via updateSource (no DB write, no native re-render of
-     * RSR's custom card), then re-track. The in-memory roll sync is intentionally not
-     * persisted — the registry is rebuilt from flags on reload via prepareData -> track,
-     * and the fix only needs to hold for the live session (mutate -> damage) workflow.
+     * native message.rolls through the registry. Refresh the live document's rolls
+     * in-memory (updateChatMessage also persists them for usage cards) and re-track.
      * @param {ChatMessage} message The activation card whose attack roll changed.
      */
     static resyncAttackRegistry(message) {
-        if (!message?.id || message.flags?.dnd5e?.originatingMessage !== message.id) return;
+        if (!message?.id || message.type !== "usage" || !message.flags?.[MODULE_SHORT]?.renderAttack) return;
 
         try {
             const rolls = ChatUtility.getMessageRolls(message);
-            message.updateSource({ rolls: CoreUtility.serializeRolls(rolls) });
-            dnd5e.registry?.messages?.track?.(message);
+            if (!rolls.some(r => RollUtility.isRollOfType(r, CONFIG.Dice.D20Roll))) return;
+            ActivityUtility._updateSourcePreservingState(message, { rolls: CoreUtility.serializeRolls(rolls) });
+            ActivityUtility.trackCardAsAttack(message);
         } catch (err) {
             console.warn("RSReforged | failed to re-sync attack roll registry:", err);
         }
     }
 
+    /**
+     * Map a chat message to the RSR roll type it represents.
+     *
+     * dnd5e 6.0 gives every roll its own message type with a system data model
+     * (data/chat-message/_module.mjs): "usage", "attack", "damage", "healing", "check"
+     * (system.type "ability"|"initiative", system.skill / system.tool), "save"
+     * (system.type "ability"|"concentration"|"death"), "generic" (formula), "hitDie", ...
+     * The 5.x `flags.dnd5e.roll.type` no longer exists; it is read for legacy messages.
+     * @param {ChatMessage} message
+     * @returns {string|null} A ROLL_TYPE value, or null.
+     */
     static getMessageType(message) {
+        if (!message) return null;
         const t = message.type;
+        const system = message.system ?? {};
 
-        // dnd5e 5.3.0: usage messages have type "usage" (plain string).
-        if (t === "usage" || t === "dnd5e.usage") return ROLL_TYPE.ACTIVITY;
-
-        // Roll messages use type "roll" and store the specific roll type in flags.
-        // message.system?.roll?.type is checked first as a future-proofing measure but
-        // dnd5e 5.3.0 does not register a system data model for "roll" typed messages,
-        // so flags.dnd5e.roll.type is the live path.
-        if (t === "roll" || t === "dnd5e.roll") {
-            return message.system?.roll?.type ?? message.flags?.dnd5e?.roll?.type ?? null;
+        switch (t) {
+            case "usage":
+            case "dnd5e.usage":
+                return ROLL_TYPE.ACTIVITY;
+            case "attack":
+                return ROLL_TYPE.ATTACK;
+            case "damage":
+            case "healing":
+                return ROLL_TYPE.DAMAGE;
+            case "check":
+                if (system.type === "initiative") return null;
+                if (system.skill) return ROLL_TYPE.SKILL;
+                if (system.tool) return ROLL_TYPE.TOOL;
+                return ROLL_TYPE.ABILITY_TEST;
+            case "save":
+                if (system.type === "death") return ROLL_TYPE.DEATH_SAVE;
+                if (system.type === "concentration") return ROLL_TYPE.CONCENTRATION;
+                return ROLL_TYPE.ABILITY_SAVE;
         }
 
-        // Legacy V12 fallbacks for messages created before dnd5e 4.x.
-        if (message.flags?.dnd5e?.messageType === MESSAGE_TYPE.USAGE || !!message.flags?.dnd5e?.use) return ROLL_TYPE.ACTIVITY;
-        if (message.flags?.dnd5e?.messageType === MESSAGE_TYPE.ROLL || !!message.flags?.dnd5e?.roll) {
-            return message.flags?.dnd5e?.roll?.type ?? null;
+        // Legacy (dnd5e < 6) messages still present in a world's chat log.
+        const legacy = message.flags?.dnd5e;
+        if (legacy?.messageType === MESSAGE_TYPE.USAGE || !!legacy?.use) return ROLL_TYPE.ACTIVITY;
+        if (legacy?.messageType === MESSAGE_TYPE.ROLL || !!legacy?.roll) {
+            return legacy?.roll?.type ?? null;
         }
-        
+
         return null;
     }
 
     static getActivityType(message) {
-        // dnd5e 5.3.0: message.system.activity is a getter on UsageMessageData that calls
-        // getAssociatedActivity(), so both paths return the same activity object.
-        // flags.dnd5e.activity.type is the reliable stored path for all message versions.
-        return message.flags?.dnd5e?.activity?.type ?? message.system?.activity?.type;
+        // dnd5e 6.0: `system.activity` is stored reference data ({ id, img, name, type, uuid }).
+        return message.system?.activity?.type ?? message.flags?.dnd5e?.activity?.type;
     }
 
     // dnd5e 5.3.0: getAssociatedActor() is now a native ChatMessage5e method. Use it as the
@@ -361,7 +380,7 @@ function _onDamageHoverEnd(html) {
 
 function _setupCardListeners(message, html) {
     if (SettingsUtility.getSettingValue(SETTING_NAMES.MANUAL_DAMAGE_MODE) > 0) {
-        html.find('.card-buttons').find(`[data-action='rsr-${ROLL_TYPE.DAMAGE}']`).click(async event => {
+        html.find(`[data-action='rsr-${ROLL_TYPE.DAMAGE}']`).click(async event => {
             await _processDamageButtonEvent(message, event);
         });
     }
@@ -425,7 +444,7 @@ async function _enforceDualRolls(message) {
 }
 
 function _safeInsert(sectionHTML, targetHTML) {
-    if (targetHTML.is('.message-content') || targetHTML.hasClass('chat-message') || targetHTML.length === 0) {
+    if (targetHTML.length === 0 || targetHTML.is('.message-content, .chat-card') || targetHTML.hasClass('chat-message')) {
         targetHTML.append(sectionHTML);
     } else {
         sectionHTML.insertBefore(targetHTML);
@@ -433,25 +452,136 @@ function _safeInsert(sectionHTML, targetHTML) {
 }
 
 /**
- * Render dnd5e dice markup from roll.toMessage() data without triggering the full
- * enriched-roll-flavor path. dnd5e's _enrichChatCard removes .message-header
- * .flavor-text when the synthetic message resolves an item + roll; toMessage()
- * payloads often omit that node, causing the same null.remove() failure. Strip
- * both flags because dnd5e 5.3 can still resolve the item through the originating
- * message even after flags.dnd5e.item is removed from the synthetic fragment.
- *
- * @param {object} chatData  Data returned by Roll#toMessage / DamageRoll.toMessage.
- * @returns {Promise<JQuery>} Rendered message root (caller typically .find('.dice-roll')).
+ * Make an RSR-rendered `.dice-roll` expandable. dnd5e only binds its expand handler
+ * (ChatMessage5e#_onClickDiceRoll) to rolls present when it enriches the card, and
+ * RSR's rolls are injected afterwards. The core `data-action="expandRoll"` attribute is
+ * dropped because dnd5e 6 routes every `[data-action]` click inside a system-typed card
+ * to the card's data model (usage cards forward unknown actions to
+ * Activity#onChatAction).
+ * @param {JQuery} rollHTML
+ * @returns {JQuery}
  */
-async function _renderDnd5eDiceFragment(chatData) {
-    const ChatMessage5e = CONFIG.ChatMessage.documentClass;
-    const prepared = foundry.utils.deepClone(chatData);
-    prepared.flags ??= {};
-    if (prepared.flags.dnd5e) {
-        delete prepared.flags.dnd5e.item;
-        delete prepared.flags.dnd5e.roll;
+function _bindDiceRollToggle(rollHTML) {
+    rollHTML.removeAttr('data-action');
+    rollHTML.off('click.rsr').on('click.rsr', event => {
+        event.stopPropagation();
+        $(event.currentTarget).toggleClass('expanded');
+    });
+    return rollHTML;
+}
+
+/**
+ * Render a roll with the classic core chat template (`.dice-roll > .dice-result >
+ * .dice-formula / .dice-tooltip / h4.dice-total`) that RSR's sections, multiroll overlay
+ * and apply buttons are built around. dnd5e 6 system-typed messages render rolls with the
+ * compact `roll-compact.hbs` button + popover instead, so RSR renders the roll itself
+ * rather than reusing the card's markup. dnd5e's roll-breakdown.hbs tooltip template is
+ * still used (Roll.TOOLTIP_TEMPLATE).
+ * @param {Roll} roll An evaluated roll.
+ * @returns {Promise<JQuery>} The `.dice-roll` element.
+ */
+async function _renderRollElement(roll) {
+    const rendered = $(await roll.render({ isPrivate: false }));
+    let rollHTML = rendered.filter('.dice-roll');
+    if (!rollHTML.length) rollHTML = rendered.find('.dice-roll');
+    if (!rollHTML.length) rollHTML = $('<div class="dice-roll"></div>').append(rendered);
+    return _bindDiceRollToggle(rollHTML.first());
+}
+
+/**
+ * Render damage rolls as a single classic `.dice-roll` with dnd5e 6's per-damage-type
+ * breakdown (templates/chat/parts/damage-breakdown.hbs — the same partial and part data
+ * DamageMessageData#_prepareContext uses), so each tooltip part carries its damage type
+ * icon/label for RSR's apply buttons and damage type toggles.
+ * @param {DamageRoll[]} rolls Evaluated damage rolls.
+ * @returns {Promise<JQuery>}
+ */
+async function _renderDamageRollElement(rolls) {
+    const aggregate = CONFIG.DND5E.aggregateDamageDisplay;
+    const aggregateDamageRolls = globalThis.dnd5e?.dice?.aggregateDamageRolls;
+    let display = rolls;
+    if (aggregate && typeof aggregateDamageRolls === "function") {
+        try { display = aggregateDamageRolls(rolls); } catch (err) { display = rolls; }
     }
-    return $(await new ChatMessage5e(prepared).renderHTML());
+
+    const parts = display.map(roll => {
+        const part = typeof roll.aggregateTerms === "function"
+            ? roll.aggregateTerms()
+            : {
+                type: roll.options?.type,
+                total: Math.max(0, roll.total),
+                constant: 0,
+                dice: roll.dice.flatMap(d => d.getTooltipData().rolls),
+                icon: null,
+                method: null
+            };
+        part.config = CONFIG.DND5E.damageTypes[part.type] ?? CONFIG.DND5E.healingTypes[part.type] ?? null;
+        part.label = part.config?.labelShort ?? part.config?.label ?? "";
+        return part;
+    });
+    const formula = display.map(r => aggregate ? r.formula : ` + ${r.formula}`).join("").replace(/^ \+ /, "");
+    const total = display.reduce((sum, roll) => sum + Math.max(0, roll.total), 0);
+    const breakdown = await foundry.applications.handlebars.renderTemplate(
+        "systems/dnd5e/templates/chat/parts/damage-breakdown.hbs", { parts }
+    );
+
+    const rollHTML = $(`<div class="dice-roll"><div class="dice-result"><div class="dice-formula"></div>${breakdown}<h4 class="dice-total"></h4></div></div>`);
+    rollHTML.find('.dice-formula').text(formula);
+    rollHTML.find('.dice-total').text(total);
+    return _bindDiceRollToggle(rollHTML);
+}
+
+/**
+ * Elements of the card that belong to other messages: dnd5e 6 renders descendant roll
+ * messages (saves against this usage, etc.) as `.card-summary` blocks inside the origin
+ * card when the chatCardSummary setting is on. RSR must never touch those.
+ * @param {JQuery} html
+ * @param {string} selector
+ * @returns {JQuery}
+ */
+function _findOwn(html, selector) {
+    return html.find(selector).filter((_, el) => !el.closest('.card-summary'));
+}
+
+/**
+ * Remove the dnd5e usage-card buttons RSR replaces and return the element RSR's sections
+ * should be inserted before (or appended to).
+ *
+ * dnd5e 6 renders usage buttons in card-face.hbs as
+ * `section.icon-row > ul > li > button[data-action]`, with grouped buttons using
+ * `data-forward-action` instead of `data-action`. The legacy `.card-buttons` block no
+ * longer exists (it is still honoured for cards with legacy custom content).
+ * @param {JQuery} html The `.message-content` element.
+ * @param {string[]} actions Button actions to remove.
+ * @returns {JQuery} Anchor element.
+ */
+function _removeCardButtons(html, actions) {
+    const buttonRows = _findOwn(html, 'section.icon-row')
+        .filter((_, row) => $(row).find('button[data-action], button[data-forward-action]').length > 0);
+
+    for (const action of actions) {
+        _findOwn(html, `[data-action="${action}"], [data-forward-action="${action}"]`).each((_, el) => {
+            const li = $(el).closest('li');
+            if (li.length && buttonRows.has(li[0]).length && li.find('button').length <= 1) li.remove();
+            else $(el).remove();
+        });
+    }
+
+    let anchor = null;
+    buttonRows.each((_, row) => {
+        if ($(row).find('button').length === 0) $(row).remove();
+        else anchor ??= $(row);
+    });
+
+    if (!anchor) {
+        const legacy = _findOwn(html, '.card-buttons').first();
+        if (legacy.length) anchor = legacy;
+    }
+    if (!anchor) {
+        const card = _findOwn(html, '.chat-card').first();
+        anchor = card.length ? card : html;
+    }
+    return anchor;
 }
 
 function _snapshotSupplements(html) {
@@ -466,7 +596,11 @@ function _storeSupplementsForMerge(parent, type, html) {
 function _getRollMastery(message) {
     const roll = ChatUtility.getMessageRolls(message).find(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll" || r.constructor?.name === "D20Roll");
     const activity = ActivityUtility._getActivityFromMessage(message);
-    const mastery = message.flags?.dnd5e?.roll?.mastery ?? message.system?.roll?.mastery ?? roll?.options?.mastery ?? activity?.item?.system?.mastery;
+    const mastery = message.flags?.[MODULE_SHORT]?.mastery
+        ?? roll?.options?.mastery
+        ?? message.flags?.dnd5e?.roll?.mastery
+        ?? message.system?.mastery
+        ?? activity?.item?.system?.mastery;
     return typeof mastery === "string" ? mastery.toLowerCase() : "";
 }
 
@@ -553,31 +687,28 @@ async function _injectContent(message, type, html) {
     // before RSR strips it. See docs/INTEGRATION.md.
     Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, html, type);
 
-    // dnd5e 5.3.0: getOriginatingMessage() is a native ChatMessage5e method that returns
-    // the usage card a roll message was spawned from, or `this` when no link exists.
-    // We only treat it as a real parent when it is a different message.
+    // dnd5e 6.0: a roll message's origin card is `system.origin` (ForeignDocumentField),
+    // resolved by ChatMessage5e#getOriginatingMessage(), which returns `this` when there
+    // is none. Only a different message is a real parent. `flags.dnd5e.originatingMessage`
+    // is the 5.x location (read for legacy messages; RSR 4.x also stamped a card's own id
+    // there, which is not a parent).
     let parent = null;
     if (typeof message.getOriginatingMessage === "function") {
         const origin = message.getOriginatingMessage();
         if (origin && origin !== message) parent = origin;
     }
-    if (!parent && typeof message.getAssociatedMessage === "function") parent = message.getAssociatedMessage();
-    // Ignore a self-referential originatingMessage: RSR stamps the card's own id as
-    // its originatingMessage so dnd5e's MessageRegistry tracks it under the "attack"
-    // hook (letting condition modules resolve the attack roll for damage). Such a card
-    // is the root, not a child — resolving it here would make it its own merge parent.
     if (!parent && message.flags?.dnd5e?.originatingMessage
         && message.flags.dnd5e.originatingMessage !== message.id) {
-        parent = game.messages.get(message.flags.dnd5e.originatingMessage);
+        parent = game.messages.get(message.flags.dnd5e.originatingMessage) ?? null;
     }
-    if (!parent && message.system?.message) parent = game.messages.get(message.system.message);
-    
+
     message.flags[MODULE_SHORT].displayChallenge = parent?.shouldDisplayChallenge ?? message.shouldDisplayChallenge;
     message.flags[MODULE_SHORT].displayAttackResult = game.user.isGM || (game.settings.get("dnd5e", "attackRollVisibility") !== "none");
 
     switch (type) {
         case ROLL_TYPE.DAMAGE:
-            if (!message.flags?.dnd5e?.item?.id && !message.system?.item?.id) {
+            if (!message.system?.item?.id && !message.flags?.dnd5e?.item?.id) {
+                if (!message.isContentVisible) return;
                 const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
 
                 message.flags[MODULE_SHORT].renderDamage = true;
@@ -586,22 +717,25 @@ async function _injectContent(message, type, html) {
                 message.flags[MODULE_SHORT].isCritical = ActivityUtility.isCriticalRoll(mRolls[0]);
 
                 if (useRsrDamageButtons) {
-                    const enricher = html.find('.dice-roll');
-                    // Foundry core renders a roll message's flavor as .flavor-text inside
-                    // .message-header — a SIBLING of the .message-content node that `html`
-                    // is here — so the clear must climb to the message root to reach it.
-                    // Scoping to .chat-message (rather than .parent()) keeps the clear from
-                    // leaking into other messages when `html` is a fallback root with no
-                    // .message-content wrapper.
-                    const messageRoot = html.closest('.chat-message');
-                    (messageRoot.length ? messageRoot : html).find('.flavor-text').text('');
-                    html.prepend('<div class="dnd5e2 chat-card"></div>');
-                    html.find('.chat-card').append(enricher);
+                    const rolls = _getDamageRolls(message);
+                    if (!rolls.length) break;
 
-                    await _injectDamageRoll(message, enricher, { contentHtml: html });
+                    const rollHTML = await _renderDamageRollElement(rolls);
+                    rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
+                    rollHTML.find('.dice-result').addClass('rsr-damage');
+
+                    // dnd5e 6 damage-card.hbs: `section.icon-row > button.dice-roll + .roll-breakdown`
+                    // followed by the native <damage-application> tray, which RSR's buttons replace.
+                    const nativeRoll = _findOwn(html, '.dice-roll').first();
+                    const nativeRow = nativeRoll.closest('section.icon-row');
+                    if (nativeRow.length) nativeRow.replaceWith(rollHTML);
+                    else if (nativeRoll.length) nativeRoll.replaceWith(rollHTML);
+                    else html.append(rollHTML);
+                    _findOwn(html, '.roll-breakdown').remove();
+                    _findOwn(html, 'damage-application').remove();
+
                     await _injectApplyDamageButtons(message, html);
                     _injectDamageTypeToggles(message, html);
-                    enricher.remove();
                 }
 
                 break;
@@ -609,37 +743,30 @@ async function _injectContent(message, type, html) {
             // falls through to ATTACK when item id is present
         case ROLL_TYPE.ATTACK:
             if (parent && parent.flags[MODULE_SHORT] && message.isAuthor) {
-                parent.flags.dnd5e ??= {};
                 _storeSupplementsForMerge(parent, type, html);
 
                 if (type === ROLL_TYPE.ATTACK) {
                     parent.flags[MODULE_SHORT].renderAttack = true;
-                    // dnd5e 5.3.0: roll data lives in flags.dnd5e.roll; system.roll is
-                    // undefined since there is no data model for "roll" typed messages.
-                    parent.flags.dnd5e.roll = message.flags?.dnd5e?.roll ?? message.system?.roll;
-                    // wm5e and other mastery modules read flags.dnd5e.targets off the
-                    // card to resolve the attacked actor; copy from the child roll message
-                    // dnd5e enriched before RSR deleted it.
+                    const mastery = message.system?.mastery ?? ChatUtility.getMessageRolls(message)[0]?.options?.mastery;
+                    if (mastery) parent.flags[MODULE_SHORT].mastery = mastery;
+                    // wm5e and other mastery modules read the card's target descriptors to
+                    // resolve the attacked actor; copy them from the child roll message
+                    // (dnd5e 6: system.targets) before RSR deletes it.
                     ActivityUtility._syncAttackTargets(parent, message);
-                    // dnd5e 5.3.0: do NOT set parent.flags.dnd5e.originatingMessage to
-                    // parent.id — that would make getOriginatingMessage() return the usage
-                    // card itself for all future lookups, breaking the registry. The
-                    // incoming roll message is deleted below, so there is no value in
-                    // registering it with the MessageRegistry either.
                 }
 
                 if (type === ROLL_TYPE.DAMAGE) {
                     parent.flags[MODULE_SHORT].renderDamage = true;
-                    
+
                     const mRolls = ChatUtility.getMessageRolls(message);
                     parent.flags[MODULE_SHORT].isCritical = ActivityUtility.isCriticalRoll(mRolls[0]);
-                    
-                    const actType = message.flags?.dnd5e?.activity?.type ?? message.system?.activity?.type;
-                    parent.flags[MODULE_SHORT].isHealing = actType === "heal";
+
+                    parent.flags[MODULE_SHORT].isHealing = message.type === "healing"
+                        || ChatUtility.getActivityType(message) === "heal";
                 }
 
-                parent.flags[MODULE_SHORT].quickRoll = true;                
-                
+                parent.flags[MODULE_SHORT].quickRoll = true;
+
                 let newParentRolls = ChatUtility.getMessageRolls(parent);
                 let newMsgRolls = ChatUtility.getMessageRolls(message);
                 const cleanType = type === ROLL_TYPE.ATTACK
@@ -668,10 +795,7 @@ async function _injectContent(message, type, html) {
         case ROLL_TYPE.ABILITY_TEST:
         case ROLL_TYPE.DEATH_SAVE:
         case ROLL_TYPE.TOOL:
-        // dnd5e currently stamps concentration saves as "save", but route the
-        // dedicated type here too so D20_NPC_ROLL_TYPES coverage is honored if a
-        // future system version stamps them directly.
-        case ROLL_TYPE.CONCENTRATION:
+        case ROLL_TYPE.CONCENTRATION: {
             if (!message.isContentVisible) return;
 
             const roll = ChatUtility.getMessageRolls(message)[0];
@@ -680,119 +804,101 @@ async function _injectContent(message, type, html) {
             // Wire the display options first; _configureRollVisibility overrides
             // them when the roll should be hidden from this user.
             roll.options.displayChallenge = message.flags[MODULE_SHORT].displayChallenge;
-            roll.options.forceSuccess = message.flags?.dnd5e?.roll?.forceSuccess ?? message.system?.roll?.forceSuccess;
+            roll.options.forceSuccess = message.system?.forceSuccess ?? message.flags?.dnd5e?.roll?.forceSuccess;
 
             const checkActor = ChatUtility.getActorFromMessage(message);
             _configureRollVisibility(roll, type, checkActor);
 
-            const render = await RenderUtility.render(TEMPLATE.MULTIROLL, { roll, key: type })
-            html.find('.dice-total').replaceWith(render);
-            html.find('.dice-tooltip').prepend(html.find('.dice-formula'));
+            const render = await RenderUtility.render(TEMPLATE.MULTIROLL, { roll, key: type });
+
+            // dnd5e 6 check/save cards render the roll as a compact button
+            // (roll-compact.hbs: `button.dice-roll` + `.roll-breakdown` popover) inside a
+            // `section.icon-row`. Replace it with the classic roll markup carrying RSR's
+            // multiroll display.
+            const rollHTML = await _renderRollElement(roll);
+            rollHTML.addClass('rsr-roll');
+            rollHTML.find('.dice-total').replaceWith(render);
+            rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
 
             if (roll.options.hideFinalResult) {
-                _applyHiddenRollPresentation(html, roll);
+                _applyHiddenRollPresentation(rollHTML, roll);
             }
 
-            if (message.flags[MODULE_SHORT].isConcentration)
-            {
-                await _injectBreakConcentrationButton(message, html)
+            const nativeRoll = _findOwn(html, '.dice-roll').first();
+            if (nativeRoll.length) {
+                nativeRoll.next('.roll-breakdown').remove();
+                nativeRoll.replaceWith(rollHTML);
+            } else {
+                html.append(rollHTML);
+            }
+
+            // dnd5e 6 save cards offer their own "Break Concentration" button
+            // (SaveMessageData#canBreakConcentration); only add RSR's on legacy cards.
+            if (message.flags[MODULE_SHORT].isConcentration && message.type !== "save") {
+                await _injectBreakConcentrationButton(message, html);
             }
             break;
+        }
         case ROLL_TYPE.ACTIVITY: {
             if (!message.isContentVisible) return;
             const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
+            const flags = message.flags[MODULE_SHORT];
+            const rendersRolls = flags.renderAttack || flags.renderFormula || flags.renderDamage || flags.manualDamage;
 
-            let actions = html.find('.card-buttons');
-            if (actions.length === 0) actions = html.find('.card-activities');
-            if (actions.length === 0) actions = html.find('.dnd5e2.chat-card');
-            if (actions.length === 0) actions = html;
-
-            // Strip pre-existing dice-roll DOM and the (now-empty) non-usage
-            // chat-card wrappers that contained them, before we inject our own
-            // render. Applies to both RSR and native modes — otherwise the
-            // message ends up with duplicate damage UIs (RSR) or empty card
-            // shells next to the new native damage card (native).
-            if (useRsrDamageButtons
-                || message.flags[MODULE_SHORT].renderAttack
-                || message.flags[MODULE_SHORT].renderFormula
-                || message.flags[MODULE_SHORT].renderDamage) {
-                // Rescue dnd5e-injected supplements (mastery anchors, damage-on-save
-                // notes, legendary-resistance flags from _enrichAttackTargets et al.)
-                // off chat-cards we're about to remove, before the strip. Parked at
-                // html root so the post-inject rescue below can move them under
-                // .rsr-section-attack alongside supplements that survived the strip
-                // in their original location.
-                const doomed = html.find('.dnd5e2.chat-card').not('.activation-card, .usage-card');
-                doomed.find('.supplement').appendTo(html);
-                html.find('.dice-roll').remove();
-                doomed.remove();
+            // dnd5e 6 renders usage cards from usage-card.hbs, which contains no rolls. Only
+            // legacy custom-content cards can carry stray roll markup; strip it (outside
+            // native `.card-summary` blocks) so it is not duplicated by RSR's sections.
+            if (useRsrDamageButtons || rendersRolls) {
+                _findOwn(html, '.dice-roll').remove();
             }
 
             if (useRsrDamageButtons) {
-                // dnd5e >= 5.3.1 renders its own damage-application tray into usage
-                // cards whose rolls contain DamageRolls (issue #37). In RSR apply mode
-                // RSR's buttons are the apply UI, so remove the system tray. No-op on
-                // dnd5e 5.3.0, which injects no tray.
-                html.find('damage-application').each((_, el) => {
+                // In RSR apply mode RSR's buttons are the apply UI; drop any system tray
+                // that is not part of a descendant summary.
+                _findOwn(html, 'damage-application').each((_, el) => {
                     const wrapper = $(el).parent('.card-tray.damage-tray');
                     (wrapper.length ? wrapper : $(el)).remove();
                 });
             }
 
-            if (message.flags[MODULE_SHORT].renderAttack || message.flags[MODULE_SHORT].renderAttack === false) {
-                html.find('[data-action=rollAttack], [data-action=attack]').remove();
+            const removeActions = [];
+            if (flags.renderAttack !== undefined) removeActions.push("rollAttack", "attack");
+            if (flags.manualDamage || flags.renderDamage) removeActions.push("rollDamage", "damage", "rollHealing", "heal");
+            if (flags.renderFormula) removeActions.push("rollFormula", "formula");
+            const actions = _removeCardButtons(html, removeActions);
+
+            if (flags.renderAttack !== undefined) {
                 await _injectAttackRoll(message, actions, { contentHtml: html });
             }
 
-            if (message.flags[MODULE_SHORT].manualDamage || message.flags[MODULE_SHORT].renderDamage) {
-                html.find('[data-action=rollDamage], [data-action=damage]').remove();
-                html.find('[data-action=rollHealing], [data-action=heal]').remove();
-            }
-
-            if (message.flags[MODULE_SHORT].manualDamage) {
+            if (flags.manualDamage) {
                 await _injectDamageButton(message, actions);
             }
 
-            if (message.flags[MODULE_SHORT].renderDamage) {
+            if (flags.renderDamage) {
                 await _injectDamageRoll(message, actions, { mode: useRsrDamageButtons ? "rsr" : "native", contentHtml: html });
             }
 
-            if (message.flags[MODULE_SHORT].renderFormula) {
-                html.find('[data-action=rollFormula], [data-action=formula]').remove();
+            if (flags.renderFormula) {
                 await _injectFormulaRoll(message, actions, { contentHtml: html });
             }
 
             if (useRsrDamageButtons) {
                 await _injectApplyDamageButtons(message, html);
                 _injectDamageTypeToggles(message, html);
-                const rootParent = html.closest('.message-content');
-                if (rootParent.length) rootParent.find('> .dice-roll').remove();
             }
 
-            // Place surviving + rescued dnd5e supplements (mastery anchors,
-            // damage-on-save notes, legendary-resistance flags) into the most
-            // specific RSR section that exists for this card. Runs after all
-            // injects so we have a complete picture of which sections were
-            // created. Add .rsr-supplement for RSR's own styling
-            // (css/rsreforged.css) but keep the original .supplement class so
-            // downstream modules and dnd5e's own enrichers continue to find
-            // them. The host-narrowed selector on the addClass step prevents
-            // double-tagging supplements inside surviving .activation-card /
-            // .usage-card subtrees that RSR's strip explicitly preserves.
+            // Supplements: snapshots stored when child roll messages were merged
+            // (vanilla-mode), plus the weapon mastery reference for the attack. dnd5e 6's
+            // own card-face supplements (materials, trigger) stay where the system put them.
             _restoreStoredSupplements(message, html);
 
-            let supplementHost = html.find('.rsr-section-attack');
-            if (!supplementHost.length) supplementHost = html.find('.rsr-section-damage');
-            if (!supplementHost.length) supplementHost = html.find('.rsr-section-formula');
-            if (supplementHost.length) {
-                // Sweep loose supplements into the host, but leave restored
-                // snapshots where _restoreStoredSupplements already placed them
-                // (e.g. damage-on-save notes under .rsr-section-damage) — otherwise
-                // this attack-preferring sweep would relocate them to the wrong section.
-                supplementHost.append(html.find('.supplement').not(supplementHost.find('.supplement')).not('[data-rsr-restored-supplement]'));
-                supplementHost.find('.supplement').addClass('rsr-supplement');
-                _restoreMasterySupplement(message, supplementHost);
+            const attackSection = html.find('.rsr-section-attack');
+            if (attackSection.length) {
+                _restoreMasterySupplement(message, attackSection);
+                attackSection.find('.supplement').addClass('rsr-supplement');
             }
+            html.find('.rsr-section-damage .supplement').addClass('rsr-supplement');
             break;
         }
         default:
@@ -817,22 +923,12 @@ async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
 
     roll.options.displayChallenge = message.flags[MODULE_SHORT].displayAttackResult;
 
-    // dnd5e 5.3.0: Use getAssociatedActor() instead of game.actors.get(speaker.actor) so
-    // that token actors (which are not in game.actors) are correctly resolved. Previously
-    // this always returned null for unlinked tokens, causing hideFinalResult to silently
-    // default to false for GMs viewing other players' rolls.
+    // getAssociatedActor() resolves token actors (which are not in game.actors).
     const actor = ChatUtility.getActorFromMessage(message);
     _configureRollVisibility(roll, ROLL_TYPE.ATTACK, actor);
 
     const render = await RenderUtility.render(TEMPLATE.MULTIROLL, { roll, key: ROLL_TYPE.ATTACK });
-    const chatData = await roll.toMessage({}, { create: false });
-    // Foundry V14 removed CONST.CHAT_MESSAGE_TYPES entirely. The previous workaround of
-    // setting chatData.type to the numeric OOC value now coerces to the string "1", which
-    // fails ChatMessage5e's strict type validation and throws a DataModelValidationError
-    // before renderHTML() is ever reached. roll.toMessage() already sets type:"roll" which
-    // is a valid Foundry V14 type, so we leave it alone.
-
-    const rollHTML = (await _renderDnd5eDiceFragment(chatData)).find('.dice-roll');
+    const rollHTML = await _renderRollElement(roll);
     rollHTML.find('.dice-total').replaceWith(render);
     rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
 
@@ -840,12 +936,11 @@ async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
         _applyHiddenRollPresentation(rollHTML, roll);
     }   
 
-    // dnd5e 5.3.0: getAssociatedActor() correctly resolves token actors. The stored
-    // fallback covers quantity-one autoDestroy ammunition, which is deleted before
-    // RSR renders the combined card.
+    // The stored fallback covers quantity-one autoDestroy ammunition, which is deleted
+    // before RSR renders the combined card.
     const ammunitionId = message.flags[MODULE_SHORT].ammunition;
-    const liveAmmunition = ChatUtility.getActorFromMessage(message)?.items?.get(ammunitionId);
-    const storedAmmunition = message.flags?.dnd5e?.roll?.ammunitionData;
+    const liveAmmunition = actor?.items?.get(ammunitionId);
+    const storedAmmunition = message.flags[MODULE_SHORT].ammunitionData ?? message.flags?.dnd5e?.roll?.ammunitionData;
     const storedAmmunitionId = storedAmmunition?._id ?? storedAmmunition?.id;
     const ammo = liveAmmunition?.name
         ?? (storedAmmunition && storedAmmunitionId === ammunitionId
@@ -861,9 +956,51 @@ async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
     }));
     
     $(sectionHTML).append(rollHTML);
+
+    const targetsHTML = _renderAttackTargets(message, roll);
+    if (targetsHTML) $(sectionHTML).append(targetsHTML);
+
     _safeInsert(sectionHTML, html);
 
     Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.ATTACK, sectionHTML);
+}
+
+/**
+ * Render the hit/miss target row for the combined card's attack, mirroring dnd5e 6's
+ * attack-card.hbs / AttackMessageData#_prepareTargetsContext. RSR's attack never becomes
+ * a dnd5e "attack" message, so the system does not render this row for it.
+ * @param {ChatMessage} message The usage card.
+ * @param {D20Roll} roll The attack roll.
+ * @returns {JQuery|null}
+ */
+function _renderAttackTargets(message, roll) {
+    const targets = ActivityUtility.getCardTargets(message);
+    if (!Array.isArray(targets) || !targets.length) return null;
+
+    const visibility = game.settings.get("dnd5e", "attackRollVisibility");
+    const hidden = roll.options?.hideFinalResult || message.flags[MODULE_SHORT].dual;
+    const showAC = !hidden && (game.user.isGM || (visibility === "all"));
+    const showResult = !hidden && (game.user.isGM || (visibility !== "none"));
+    const isCritical = ActivityUtility.isCriticalRoll(roll);
+    const isFumble = roll.isFumble === true;
+    const esc = foundry.utils.escapeHTML;
+
+    const entries = targets.map(target => {
+        const ac = Number.isFinite(target.ac) ? target.ac : null;
+        const isMiss = (ac === null) || (!isCritical && ((roll.total < ac) || isFumble));
+        return { ...target, ac, isMiss };
+    }).sort((lhs, rhs) => (lhs.isMiss === rhs.isMiss) ? 0 : (lhs.isMiss ? 1 : -1));
+
+    const items = entries.map(target => {
+        const result = showResult ? (target.isMiss ? " data-miss" : " data-hit") : "";
+        const value = showAC ? ` data-value="${target.ac ?? "∞"}"` : "";
+        const token = esc(target.token ?? target.actor ?? "");
+        const name = esc(target.name ?? "");
+        return `<li><target-pill${result}${value}><label>${name}</label><datalist><option value="${token}">${name}</option></datalist></target-pill></li>`;
+    }).join("");
+
+    const label = esc(CoreUtility.localize("DND5E.CHATMESSAGE.Row.Targets"));
+    return $(`<section class="icon-row rsr-attack-targets"><i class="fa-fw fa-solid fa-bullseye" aria-label="${label}"></i><ul class="unlist targets pills">${items}</ul></section>`);
 }
 
 function _configureRollVisibility(roll, rollType, actor) {
@@ -905,14 +1042,12 @@ function _applyHiddenRollPresentation(rollHTML, roll) {
 async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
     const rolls = ChatUtility.getMessageRolls(message);
     
-    const roll = rolls.find(r => r instanceof CONFIG.Dice.BasicRoll || r.class === "BasicRoll" || r.constructor?.name === "BasicRoll");
+    // Exact class match: D20Roll and DamageRoll are BasicRoll subclasses.
+    const roll = rolls.find(r => RollUtility.isRollOfType(r, CONFIG.Dice.BasicRoll));
 
     if (!roll) return;
 
-    const chatData = await roll.toMessage({}, { create: false });
-    // Foundry V14: see comment in _injectAttackRoll. type:"roll" is set by toMessage().
-
-    const rollHTML = (await _renderDnd5eDiceFragment(chatData)).find('.dice-roll');
+    const rollHTML = await _renderRollElement(roll);
     rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
 
     const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION,
@@ -933,35 +1068,27 @@ async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = ht
 
     if (!rolls || rolls.length === 0) return;
 
-    const chatData = await CONFIG.Dice.DamageRoll.toMessage(rolls, {}, { create: false });
-    // Foundry V14: see comment in _injectAttackRoll. type:"roll" is set by toMessage().
-
-    const renderedHTML = await _renderDnd5eDiceFragment(chatData);
+    const rollHTML = await _renderDamageRollElement(rolls);
 
     if (mode === "native") {
-        let nativeHTML = renderedHTML.find('.message-content').children();
-        if (!nativeHTML.length) nativeHTML = renderedHTML.find('.dnd5e2.chat-card').not('.activation-card, .usage-card');
-        if (!nativeHTML.length) nativeHTML = renderedHTML.find('.dice-roll').closest('.dnd5e2.chat-card');
-        if (!nativeHTML.length) nativeHTML = renderedHTML.find('.dice-roll');
+        // Native apply mode defers damage application to dnd5e 6's own tray. The
+        // <damage-application> element reads the damage from the card's `message.rolls`
+        // (DamageApplicationElement#connectedCallback), which RSR keeps in step with its
+        // flag copy. Shown to the same users dnd5e's damage-card.hbs shows it to.
+        const nativeHTML = $('<div class="rsr-native-damage"></div>').append(rollHTML);
 
-        // dnd5e >= 5.3.1 already rendered its own damage-application tray into the
-        // usage card (issue #37). When present, keep the system's tray as the single
-        // apply UI and strip the synthetic fragment's duplicate. On dnd5e 5.3.0 the
-        // card has no system tray and the fragment's tray is kept, as before.
-        if (contentHtml.find('damage-application').length) {
-            nativeHTML = nativeHTML.not('damage-application');
-            nativeHTML.find('damage-application').remove();
-        }
-
-        // The RSR-mode branch below builds its own section title and tags it with
-        // "(Versatile)" via flags.versatile. dnd5e's native damage card has no such
-        // header — it just shows the formula. Append the tag to the formula row so
-        // the player gets the same signal regardless of Damage Apply UI choice.
+        // The RSR-mode branch below tags its section title with "(Versatile)"; tag the
+        // formula here so the player gets the same signal.
         if (message.flags[MODULE_SHORT].versatile) {
             const label = CoreUtility.localize("DND5E.Versatile");
             const tag = `<span class="rsr-versatile-tag">(${label})</span>`;
-            const formula = nativeHTML.find('.dice-formula').first();
+            const formula = rollHTML.find('.dice-formula').first();
             if (formula.length) formula.append(` ${tag}`);
+        }
+
+        const showTray = game.user.isGM || !!globalThis.dnd5e?.settings?.allowPlayerDamageTray;
+        if (showTray && !_findOwn(contentHtml, 'damage-application').length) {
+            nativeHTML.append('<damage-application class="dnd5e2"></damage-application>');
         }
 
         _safeInsert(nativeHTML, html);
@@ -970,16 +1097,15 @@ async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = ht
         return;
     }
 
-    const rollHTML = renderedHTML.find('.dice-roll');
     rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
     rollHTML.find('.dice-result').addClass('rsr-damage');
 
     const header = message.flags[MODULE_SHORT].isHealing
-        ? {            
+        ? {
             section: `rsr-section-${ROLL_TYPE.DAMAGE}`,
             title: CoreUtility.localize("DND5E.HEAL.HealingButton"),
             icon: "<i class=\"fas fa-heart\"></i>"
-        } 
+        }
         : {
             section: `rsr-section-${ROLL_TYPE.DAMAGE}`,
             title: `${CoreUtility.localize("DND5E.Damage")} ${message.flags[MODULE_SHORT].versatile ? "(" + CoreUtility.localize("DND5E.Versatile") + ")": ""}`,
@@ -989,11 +1115,33 @@ async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = ht
         }
 
     const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION, header));
-    
+
     $(sectionHTML).append(rollHTML);
+
+    const onSave = _getDamageOnSaveSupplement(message);
+    if (onSave) $(sectionHTML).append(onSave);
+
     _safeInsert(sectionHTML, html);
 
     Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.DAMAGE, sectionHTML);
+}
+
+/**
+ * The "On Save" note dnd5e 6 shows on a save activity's damage card (damage-card.hbs,
+ * DamageMessageData `onSave`), for RSR's combined card.
+ * @param {ChatMessage} message
+ * @returns {JQuery|null}
+ */
+function _getDamageOnSaveSupplement(message) {
+    const activity = ActivityUtility._getActivityFromMessage(message);
+    const onSave = activity?.type === "save" ? activity.damage?.onSave : null;
+    if (!onSave) return null;
+    const key = `DND5E.SAVE.FIELDS.damage.onSave.${onSave.capitalize()}`;
+    if (!game.i18n.has(key)) return null;
+    const supplement = $('<p class="supplement rsr-supplement"></p>');
+    supplement.append($('<strong></strong>').text(CoreUtility.localize("DND5E.SAVE.OnSave")));
+    supplement.append(document.createTextNode(` ${CoreUtility.localize(key)}`));
+    return supplement;
 }
 
 async function _injectDamageButton(message, html) {
@@ -1007,18 +1155,22 @@ async function _injectDamageButton(message, html) {
             icon: "<i class=\"fas fa-burst\"></i>"
         }
 
-    const render = await RenderUtility.render(TEMPLATE.BUTTON, 
-    { 
+    const render = await RenderUtility.render(TEMPLATE.BUTTON,
+    {
         action: ROLL_TYPE.DAMAGE,
         ...button
     });
 
-    html.prepend($(render));
+    // dnd5e 6 has no `.card-buttons` block to prepend into; give the button its own row
+    // at the section insertion point.
+    const row = $('<div class="card-buttons rsr-card-buttons"></div>').append($(render));
+    _safeInsert(row, html);
 }
 
 async function _injectBreakConcentrationButton(message, html) {
     const button = {
-        title: CoreUtility.localize("DND5E.ConcentrationBreak"),
+        // dnd5e 6 renamed DND5E.ConcentrationBreak to DND5E.CONCENTRATION.Action.Break.
+        title: CoreUtility.localize(game.i18n.has("DND5E.ConcentrationBreak") ? "DND5E.ConcentrationBreak" : "DND5E.CONCENTRATION.Action.Break"),
         icon: "<i class=\"fas fa-xmark\"></i>"
     }
 
@@ -1337,8 +1489,8 @@ function _getApplyDamageOptions(message, damages, multiplier, healingIntent = fa
 function _isHealingApplyMessage(message) {
     return message.flags?.[MODULE_SHORT]?.isHealing === true
         || ChatUtility.getActivityType(message) === "heal"
-        || message.flags?.dnd5e?.roll?.type === ROLL_TYPE.HEALING
-        || message.system?.roll?.type === ROLL_TYPE.HEALING;
+        || message.type === "healing"
+        || message.flags?.dnd5e?.roll?.type === ROLL_TYPE.HEALING;
 }
 
 function _getApplyDamageType(damageRolls, total) {
@@ -1524,6 +1676,53 @@ async function _processRetroAdvButtonEvent(message, event) {
     }
 }
 
+/**
+ * Keep the dice already rolled on the card when it is retroactively made critical: copy
+ * each base die's results into the matching die of the freshly built critical roll, so
+ * only the extra critical dice are new.
+ *
+ * dnd5e 6.0's DamageRoll#configureDamage no longer maps terms 1:1 (#applyCriticalTerm):
+ * plain dice are altered in place, but modified or complex terms are followed by cloned
+ * copies, terms bound by `*`, `/` or `%` are wrapped (with their copies) in a
+ * ParentheticalTerm, powerful criticals add a NumericTerm, and critical bonus damage is
+ * appended. Term indices therefore drift. Instead, walk both rolls' flattened dice
+ * (Roll#dice, which includes dice inside parentheticals) in order and pair each base die
+ * with the next critical die of the same size: originals always precede their copies, so
+ * the pairing lands on the original.
+ * @param {DamageRoll} baseRoll The card's current (non-critical) damage roll.
+ * @param {DamageRoll} critRoll The newly rolled critical version.
+ */
+function _copyBaseDiceIntoCritical(baseRoll, critRoll) {
+    const critDice = critRoll.dice ?? [];
+    let cursor = 0;
+
+    for (const baseDie of baseRoll.dice ?? []) {
+        const baseResults = baseDie.results ?? [];
+        if (!baseResults.length) continue;
+
+        let match = null;
+        for (let j = cursor; j < critDice.length; j++) {
+            const candidate = critDice[j];
+            if (candidate.faces === baseDie.faces && (candidate.results?.length ?? 0) >= baseResults.length) {
+                match = candidate;
+                cursor = j + 1;
+                break;
+            }
+        }
+        if (!match) continue;
+
+        match.results.splice(0, baseResults.length, ...foundry.utils.deepClone(baseResults));
+    }
+
+    // Parenthetical groups cache their inner roll's total; recompute it from the new results.
+    for (const term of critRoll.terms) {
+        const inner = term?.roll;
+        if (inner && typeof inner._evaluateTotal === "function") {
+            try { inner._total = inner._evaluateTotal(); } catch (err) { /* keep cached total */ }
+        }
+    }
+}
+
 async function _processRetroCritButtonEvent(message, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -1550,7 +1749,11 @@ async function _processRetroCritButtonEvent(message, event) {
         let newRolls = Array.from(originalRolls);
 
         const rolls = originalRolls.filter(_isDamageRoll);
-        const crits = await ActivityUtility.getDamageFromMessage(message);
+        const crits = ActivityUtility._extractRolls(await ActivityUtility.getDamageFromMessage(message));
+        if (!crits.length) {
+            message.flags[MODULE_SHORT].isCritical = false;
+            return;
+        }
 
         // Retain original behavior for MIDI users if required
         if (CoreUtility.hasModule(MODULE_MIDI)) {
@@ -1559,15 +1762,10 @@ async function _processRetroCritButtonEvent(message, event) {
 
         for (let i = 0; i < rolls.length; i++) {
             const baseRoll = rolls[i];
-            const critRoll = crits[i]
+            const critRoll = crits[i];
+            if (!critRoll) continue;
 
-            for (const [j, term] of baseRoll.terms.entries()) {
-                if (!(term instanceof foundry.dice.terms.Die)) {
-                    continue;
-                }
-
-                critRoll.terms[j].results.splice(0, term.results.length, ...term.results);
-            }
+            _copyBaseDiceIntoCritical(baseRoll, critRoll);
 
             RollUtility.resetRollGetters(critRoll);
             newRolls[originalRolls.indexOf(baseRoll)] = critRoll;

@@ -1,5 +1,6 @@
 import { MODULE_NAME, MODULE_SHORT, ROLL_TYPE } from "../module/const.js";
 import { CoreUtility } from "./core.js";
+import { LogUtility } from "./log.js";
 import { SETTING_NAMES, SettingsUtility } from "./settings.js";
 
 export const KEYBIND_VERSATILE_TWO_HANDED = "versatileTwoHanded";
@@ -34,7 +35,12 @@ export const CRIT_TYPE = {
  */
 export class RollUtility {
     static processRoll(config, dialog, message) {
-        if (message.data.flags[MODULE_SHORT]?.processed) return;
+        // dnd5e 6.0 builds check/save message data as `{ flavor, speaker, system, type }`
+        // (actor.mjs rollSkillTool / #rollD20Test) and no longer pre-seeds `data.flags`, so
+        // the namespace has to be created before RSR writes into it.
+        const flags = RollUtility.ensureMessageFlags(message);
+        if (!flags) return;
+        if (flags[MODULE_SHORT]?.processed) return;
 
         const keys = _readSkipDialogKeys(config.event);
         const vanillaWorkflow = SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED);
@@ -45,7 +51,7 @@ export class RollUtility {
             config.flavor = `${CoreUtility.localize("DND5E.ToolPromptTitle", { tool: CoreUtility.localize("DND5E.Concentration") })}`;
         }
 
-        message.data.flags[MODULE_SHORT] = { 
+        flags[MODULE_SHORT] = {
             quickRoll: vanillaWorkflow || !dialog.configure,
             advantage: keys.advantage,
             disadvantage: keys.disadvantage,
@@ -58,6 +64,13 @@ export class RollUtility {
         const keys = _readSkipDialogKeys(usageConfig.event);
 
         const fastForward = !(keys.normal || (usageConfig.vanilla ?? false))
+
+        // Suppress dnd5e's own follow-up rolls FIRST, before anything below that could
+        // throw. dnd5e 6 calls this hook with Hooks.call, which swallows listener errors
+        // and carries on with the activation; if RSR threw before this line, dnd5e would
+        // run _triggerSubsequentActions (rolling attack/damage itself) while RSR also
+        // quick-rolled onto the card, producing doubled rolls.
+        if (fastForward) usageConfig.subsequentActions = false;
         // Preserve dnd5e's usage dialog for leveled spells so the player can
         // choose an upcast slot; cantrips skip it and use automatic scaling.
         // Note: dnd5e seeds usageConfig.scaling = 0 for any scalable activity
@@ -128,15 +141,16 @@ export class RollUtility {
             flagSeed.versatile = versatileHeld;
         }
 
-        messageConfig.data.flags[MODULE_SHORT] = flagSeed;
+        // dnd5e 6.0 seeds activity usage message data as
+        // `{ system: { targets } }` (activity/mixin.mjs Activity#use) — no `flags` key.
+        const flags = RollUtility.ensureMessageFlags(messageConfig);
+        if (flags) flags[MODULE_SHORT] = flagSeed;
 
         // Only suppress dnd5e's follow-up rolls when RSR will fire them itself
-        // on the quick-roll path. On a slow roll, leave subsequentActions alone
-        // so dnd5e's _triggerSubsequentActions can drive attack/damage/healing/
-        // formula rolls after the usage dialog closes.
-        if (fastForward) {
-            usageConfig.subsequentActions = false;
-        } else {
+        // on the quick-roll path (done at the top of this method). On a slow roll,
+        // leave subsequentActions alone so dnd5e's _triggerSubsequentActions can
+        // drive attack/damage/healing/formula rolls after the usage dialog closes.
+        if (!fastForward) {
             // RSR inverts dnd5e's skipDialog keybind: holding shift/ctrl/alt at
             // activity click means "give me the full vanilla flow" (RSR shows the
             // usage dialog, dnd5e then shows attack/damage/healing/formula dialogs).
@@ -150,6 +164,20 @@ export class RollUtility {
             // chains, `if (!event) return false` in areKeysPressed).
             usageConfig.event = null;
         }
+    }
+
+    /**
+     * Return the (created if missing) `data.flags` object of a dnd5e roll/usage message
+     * configuration. dnd5e 6.0 no longer pre-seeds `data.flags` anywhere, so every writer
+     * must go through this. Returns null for a missing configuration.
+     * @param {object} messageConfig A dnd5e BasicRollMessageConfiguration / ActivityMessageConfiguration.
+     * @returns {object|null}
+     */
+    static ensureMessageFlags(messageConfig) {
+        if (!messageConfig || typeof messageConfig !== "object") return null;
+        messageConfig.data ??= {};
+        messageConfig.data.flags ??= {};
+        return messageConfig.data.flags;
     }
 
     /**
@@ -250,6 +278,12 @@ export class RollUtility {
      */
     static isRollOfType(roll, rollClass) {
         if (!roll || !rollClass) return false;
+        // dnd5e's D20Roll and DamageRoll both extend BasicRoll, so an instanceof test would
+        // treat attack and damage rolls as formula rolls (and mergeRollsByType would evict
+        // them when a formula roll is merged). BasicRoll therefore matches its class exactly.
+        if (rollClass === CONFIG.Dice?.BasicRoll) {
+            return roll.constructor === rollClass || roll.class === rollClass.name;
+        }
         return roll instanceof rollClass || roll.class === rollClass.name || roll.constructor?.name === rollClass.name;
     }
 

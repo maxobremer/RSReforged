@@ -84,22 +84,28 @@ export class RerollManager {
         }
 
         if (SettingsUtility.getSettingValue(SETTING_NAMES.REROLL_LOG_CHAT)) {
-            const { rollMode, whisper, blind } = CoreUtility.getWhisperData();
+            const { messageMode } = CoreUtility.getWhisperData();
             // Escape the user's display name before interpolating into HTML — Foundry user names
             // allow characters that would otherwise render as markup in the chat message.
             const safeUser = foundry.utils.escapeHTML(game.user.name);
             const content = localize("log", { user: safeUser, faces, old: oldResult, new: newResult });
 
-            await ChatMessage.create({
-                user: game.user.id,
+            const data = {
+                author: game.user.id,
                 speaker: ChatMessage.getSpeaker({ user: game.user }),
                 flavor: localize("flavor"),
                 content,
-                whisper,
-                blind: blind ?? false,
-                rollMode,
                 flags: { [MODULE_SHORT]: { rerollLog: true } }
-            });
+            };
+
+            // Foundry V14: ChatMessage.applyMode / the `messageMode` creation option
+            // replace applyRollMode / `rollMode` (as used by dnd5e 6 BasicRoll.toMessage).
+            if (typeof ChatMessage.applyMode === "function") {
+                ChatMessage.applyMode(data, messageMode);
+                await ChatMessage.create(data);
+            } else {
+                await ChatMessage.create(data, { messageMode, rollMode: messageMode });
+            }
         }
 
         ui.notifications.info(localize("notification", { new: newResult }));

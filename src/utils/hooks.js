@@ -19,8 +19,8 @@ export const HOOKS_DND5E = {
     POST_ROLL_CONFIGURATION: "dnd5e.postRollConfiguration",
     PRE_ROLL_DAMAGE: "dnd5e.preRollDamage",
     PRE_USE_ACTIVITY: "dnd5e.preUseActivity",
-    // POST_USE_ACTIVITY removed: in dnd5e 5.3.0 we use usageConfig.subsequentActions = false
-    // in PRE_USE_ACTIVITY instead of returning false from POST_USE_ACTIVITY to block auto-rolls.
+    // POST_USE_ACTIVITY is not used: usageConfig.subsequentActions = false is set in
+    // PRE_USE_ACTIVITY instead of returning false from POST_USE_ACTIVITY to block auto-rolls.
     ACTIVITY_CONSUMPTION: "dnd5e.activityConsumption",
     DISPLAY_CARD: "dnd5e.displayCard",
     RENDER_CHAT_MESSAGE: "dnd5e.renderChatMessage",
@@ -85,6 +85,10 @@ export class HooksUtility {
             // PRE_ROLL_SKILL / PRE_ROLL_TOOL_CHECK so each category's setting controls
             // its own roll path instead of QUICK_ABILITY_ENABLED hijacking them.
             if (config.hookNames?.some(n => n === "skill" || n === "tool")) return true;
+            // The initiative dialog (Actor5e#rollInitiativeDialog) also chains through
+            // abilityCheck but never creates a message of its own; RSR has never
+            // quick-rolled it, so leave it to dnd5e.
+            if (config.hookNames?.includes("initiativeDialog")) return true;
 
             if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ABILITY_ENABLED)) {
                 RollUtility.processRoll(config, dialog, message);
@@ -255,14 +259,11 @@ export class HooksUtility {
             }
 
             const t = message.type;
-            // dnd5e 5.3.0: Usage cards are typed as "usage" (plain string, set in
-            // Activity#_createUsageMessage). The "dnd5e.usage" variant and the
-            // flags.dnd5e.use / flags.dnd5e.messageType === "usage" checks are kept as
-            // fallbacks for messages created by older dnd5e versions that may still exist
-            // in a world's chat history or be produced by other modules.
+            // Usage cards are typed "usage" (Activity#_createUsageMessage, via
+            // metadata.usage.messageType). Legacy fallbacks are kept for other modules.
             const isUsage = t === "usage"
                 || t === "dnd5e.usage"
-                || (!t && (message.flags?.dnd5e?.messageType === "usage" || !!message.flags?.dnd5e?.use));
+                || ((!t || t === "base") && (message.flags?.dnd5e?.messageType === "usage" || !!message.flags?.dnd5e?.use));
 
             if (isUsage && SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) {
                 const quickVanilla = SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED);
@@ -289,34 +290,32 @@ export class HooksUtility {
             }
         });
 
-        Hooks.on("renderChatMessageHTML", (message, html) => {
-            const $html = html instanceof HTMLElement ? $(html) : html;
-            // Self-heal before suppressing: if a previous render pass failed before
-            // dnd5e.renderChatMessage could restore the suppressed roll flag (e.g.
-            // another module's render handler threw mid-chain), restore it now so the
-            // in-memory document never diverges across renders.
-            ChatUtility.restoreDnd5eEnrichedRollFlavor(message);
-            ChatUtility.suppressDnd5eEnrichedRollFlavor(message);
-            ChatUtility.processChatMessage(message, html);
-            BonusManager.init(message, $html);
-            if (html instanceof HTMLElement || html[0] instanceof HTMLElement) {
-                const element = html instanceof HTMLElement ? html : html[0];
-                const observer = new MutationObserver(() => BonusManager.init(message, $(element)));
-                observer.observe(element, { childList: true, subtree: true });
-                setTimeout(() => observer.disconnect(), 15000);
-            }
-            if ($html.find('.dice-tooltip .dice-rolls .roll.die').length > 0) {
-                $html.find('.dice-tooltip .dice-rolls .roll.die').addClass('rsr-ready');
-            }
-        });
-
-        // dnd5e 5.3.0: For usage (activity) messages, ChatMessage5e.renderHTML() calls
-        // system.getHTML() after the renderChatMessageHTML hook, which completely replaces
-        // .message-content innerHTML. RSR's injection for activity cards must therefore
-        // happen here, after system.getHTML() has finished rewriting the DOM.
+        // dnd5e 6.0: every system-typed message (usage, attack, damage, check, save, ...)
+        // has a ChatMessageDataModel whose getHTML() re-renders `.message-content` from
+        // system data AFTER core fires renderChatMessageHTML (ChatMessage5e#renderHTML ->
+        // chat-message-data-model.mjs getHTML). Anything RSR injected from
+        // renderChatMessageHTML would be wiped, so all RSR DOM work happens on
+        // dnd5e.renderChatMessage, which ChatMessage5e#renderHTML fires last, for every
+        // message and on every (re-)render. Re-injecting on each render is what keeps
+        // RSR's content alive across message updates and chat log re-renders.
         Hooks.on(HOOKS_DND5E.RENDER_CHAT_MESSAGE, (message, html) => {
-            ChatUtility.restoreDnd5eEnrichedRollFlavor(message);
-            ChatUtility.processUsageChatMessage(message, html);
+            const element = html instanceof HTMLElement ? html : html?.[0];
+            if (!message || !element) return;
+            const $html = $(element);
+
+            ChatUtility.processChatMessage(message, element);
+            BonusManager.init(message, $html);
+
+            // RSR's injection is asynchronous; keep decorating the element as it lands.
+            const markReady = () => $(element).find('.dice-tooltip .dice-rolls .roll.die').not('.rsr-ready').addClass('rsr-ready');
+            const observer = new MutationObserver(() => {
+                BonusManager.init(message, $(element));
+                markReady();
+            });
+            observer.observe(element, { childList: true, subtree: true });
+            setTimeout(() => observer.disconnect(), 15000);
+
+            markReady();
         });
     }
 
