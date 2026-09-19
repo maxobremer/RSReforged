@@ -150,6 +150,17 @@ damage-application .damage-multipliers .rsr-temphp-button > i {
 	text-shadow: 0 0 6px var(--color-shadow-primary);
 }
 
+/* Revealed: the eye stays (click to make private again), faded out. */
+.message .message-metadata .rsr-reveal.rsr-revealed,
+.card-summary .rsr-reveal.rsr-revealed {
+	opacity: 0.35;
+}
+
+.message .message-metadata .rsr-reveal.rsr-revealed:hover,
+.card-summary .rsr-reveal.rsr-revealed:hover {
+	opacity: 0.8;
+}
+
 /* ---------- Retroactive bonus window ---------- */
 
 .rsr-bonus-window .form-group {
