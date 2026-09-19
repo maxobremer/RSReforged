@@ -2,6 +2,7 @@ import { MODULE_SHORT } from "../module/const.js";
 import { ChatUtility } from "./chat.js";
 import { CoreUtility } from "./core.js";
 import { LogUtility } from "./log.js";
+import { RollUtility } from "./roll.js";
 import { SETTING_NAMES, SettingsUtility } from "./settings.js";
 
 /**
@@ -9,32 +10,47 @@ import { SETTING_NAMES, SettingsUtility } from "./settings.js";
  */
 export class RerollManager {
     static registerGlobalListener() {
-        // FIX: Broadened the selector from '.roll.die' to '.roll' to catch 5e damage dice templates
-        $(document).on("mousedown", ".dice-tooltip .dice-rolls .roll", (event) => {
+        // Dice in a roll's breakdown popover carry `data-rsr-path` ("roll:die:result"),
+        // stamped by chat.js from the message's rolls; unstamped dice are not rerollable.
+        document.addEventListener("mousedown", event => {
+            const dieElement = event.target?.closest?.(".dice-tooltip .dice-rolls .roll[data-rsr-path]");
+            if (!dieElement) return;
             if (!SettingsUtility.getSettingValue(SETTING_NAMES.REROLL_EVERYONE)) return;
-            
-            const dieElement = $(event.currentTarget);
-            const messageElement = dieElement.closest(".chat-message");
-            const messageId = messageElement.data("messageId");
-            const message = game.messages.get(messageId);
 
+            const messageId = dieElement.closest("[data-rsr-message-id]")?.dataset.rsrMessageId
+                ?? dieElement.closest("[data-message-id]")?.dataset.messageId;
+            const message = game.messages.get(messageId);
             if (!message) return;
+
+            const path = RerollManager._getDiePath(dieElement);
+            if (!path) return;
 
             if (event.button === 2) {
                 if (!game.user.isGM || !SettingsUtility.getSettingValue(SETTING_NAMES.FUDGE_GM)) return;
-                this._handleFudge(message, dieElement);
+                event.preventDefault();
+                event.stopPropagation();
+                RerollManager._handleFudge(message, path);
             } else if (event.button === 0) {
-                const canReroll = game.user.isGM || 
+                const canReroll = game.user.isGM ||
                                  (message.isAuthor && SettingsUtility.getSettingValue(SETTING_NAMES.REROLL_PLAYERS));
                 if (!canReroll) return;
-                this._handleReroll(message, dieElement);
+                event.preventDefault();
+                event.stopPropagation();
+                RerollManager._handleReroll(message, path);
             }
-        });
+        }, { capture: true });
+
+        // Keep the chat context menu from opening on top of the GM's fudge prompt.
+        document.addEventListener("contextmenu", event => {
+            if (!event.target?.closest?.(".dice-tooltip .dice-rolls .roll[data-rsr-path]")) return;
+            if (!game.user.isGM || !SettingsUtility.getSettingValue(SETTING_NAMES.REROLL_EVERYONE)
+                || !SettingsUtility.getSettingValue(SETTING_NAMES.FUDGE_GM)) return;
+            event.preventDefault();
+            event.stopPropagation();
+        }, { capture: true });
     }
 
-    static async _handleReroll(message, dieElement) {
-        const { rollIndex, termIndex, resultIndex } = this._getDiePath(dieElement);
-
+    static async _handleReroll(message, { rollIndex, termIndex, resultIndex }) {
         const rolls = ChatUtility.getMessageRolls(message).map(r => {
             return r instanceof Roll ? r : Roll.fromData(r);
         });
@@ -45,11 +61,10 @@ export class RerollManager {
             return;
         }
 
-        // dnd5e tooltips render `roll.dice` (not `roll.terms`) as one tooltip-part each,
-        // so termIndex is an index into `dice`, not `terms`.
+        // dnd5e tooltips render `roll.dice` (not `roll.terms`), so termIndex indexes `dice`.
         const targetTerm = targetRoll.dice[termIndex];
-        if (!targetTerm) {
-            LogUtility.logWarning(`_handleReroll: no dice term at index ${termIndex}`, { ui: false });
+        if (!targetTerm?.results?.[resultIndex]) {
+            LogUtility.logWarning(`_handleReroll: no die result at ${termIndex}/${resultIndex}`, { ui: false });
             return;
         }
 
@@ -60,10 +75,10 @@ export class RerollManager {
         const newResult = newDieRoll.dice[0].results[0];
 
         targetTerm.results[resultIndex].result = newResult.result;
-        this._recalculateModifiers(targetTerm);
+        this._recalculateModifiers(targetRoll, targetTerm);
         targetRoll._total = targetRoll._evaluateTotal();
 
-        _persistRolls(message, rolls);
+        _persistRolls(message, rolls, { rollIndex });
 
         await this._announceReroll(message, newDieRoll, { faces, oldResult, newResult: newResult.result });
     }
@@ -111,9 +126,7 @@ export class RerollManager {
         ui.notifications.info(localize("notification", { new: newResult }));
     }
 
-    static async _handleFudge(message, dieElement) {
-        const { rollIndex, termIndex, resultIndex } = this._getDiePath(dieElement);
-
+    static async _handleFudge(message, { rollIndex, termIndex, resultIndex }) {
         const content = `<div style="padding:4px 0">
             <input type="number" id="fudge-value" placeholder="Enter new value" autofocus
                    style="width:100%; text-align:center; font-size:1.2em;">
@@ -145,19 +158,25 @@ export class RerollManager {
         }
 
         const targetTerm = targetRoll.dice[termIndex];
-        if (!targetTerm) {
-            LogUtility.logWarning(`_handleFudge: no dice term at index ${termIndex}`, { ui: false });
+        if (!targetTerm?.results?.[resultIndex]) {
+            LogUtility.logWarning(`_handleFudge: no die result at ${termIndex}/${resultIndex}`, { ui: false });
             return;
         }
 
         targetTerm.results[resultIndex].result = newVal;
-        this._recalculateModifiers(targetTerm);
+        this._recalculateModifiers(targetRoll, targetTerm);
         targetRoll._total = targetRoll._evaluateTotal();
 
-        _persistRolls(message, rolls);
+        _persistRolls(message, rolls, { rollIndex });
     }
 
-    static _recalculateModifiers(targetTerm) {
+    static _recalculateModifiers(targetRoll, targetTerm) {
+        // The leading d20 of a d20 roll: re-select the kept die (normal = first, advantage =
+        // highest, disadvantage = lowest) without re-running reroll/min modifiers.
+        if (targetRoll instanceof CONFIG.Dice.D20Roll && RollUtility.getD20Term(targetRoll) === targetTerm) {
+            RollUtility.applyD20Selection(targetRoll);
+            return;
+        }
         if (targetTerm.modifiers.some(m => m.includes("kh") || m.includes("kl"))) {
             targetTerm.results.forEach(r => {
                 r.discarded = false;
@@ -167,28 +186,20 @@ export class RerollManager {
         }
     }
 
+    /**
+     * Read the "roll:die:result" path chat.js stamped on a breakdown die.
+     * @param {HTMLElement} dieElement
+     * @returns {{rollIndex: number, termIndex: number, resultIndex: number}|null}
+     */
     static _getDiePath(dieElement) {
-        const tooltipPart = dieElement.closest(".tooltip-part");
-        const allParts = dieElement.closest(".dice-tooltip").find(".tooltip-part");
-        const termIndex = allParts.index(tooltipPart);
-
-        const diceRoll = dieElement.closest(".dice-roll");
-        const allDiceRolls = dieElement.closest(".message-content").find(".dice-roll");
-        const rollIndex = Math.max(0, allDiceRolls.index(diceRoll));
-
-        const resultIndex = dieElement.index();
-
+        const [rollIndex, termIndex, resultIndex] = String(dieElement.dataset.rsrPath ?? "").split(":").map(Number);
+        if (![rollIndex, termIndex, resultIndex].every(Number.isInteger)) return null;
         return { rollIndex, termIndex, resultIndex };
     }
 }
 
-function _persistRolls(message, rolls) {
-    const serialised = CoreUtility.serializeRolls(rolls);
-
-    if (message.flags?.[MODULE_SHORT]) {
-        message.flags[MODULE_SHORT].rolls = serialised;
-        ChatUtility.updateChatMessage(message, { flags: message.flags });
-    } else {
-        message.update({ rolls: serialised });
-    }
+function _persistRolls(message, rolls, { rollIndex } = {}) {
+    ChatUtility.persistRolls(message, rolls).then(() => {
+        if (rolls[rollIndex] instanceof CONFIG.Dice.D20Roll) ChatUtility.resyncAttackRegistry(message);
+    }).catch(err => console.error("RSReforged | failed to persist rerolled dice", err));
 }

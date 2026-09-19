@@ -1,12 +1,12 @@
 import { MODULE_SHORT } from "../module/const.js";
 import { MODULE_MIDI } from "../module/integration.js";
-import { TEMPLATE } from "../module/templates.js";
 import { ActivityUtility } from "./activity.js";
+import { BonusManager } from "./bonus.js";
 import { CoreUtility } from "./core.js";
 import { DialogUtility } from "./dialog.js";
 import { LogUtility } from "./log.js";
-import { RenderUtility } from "./render.js";
-import { ROLL_STATE, ROLL_TYPE, RollUtility } from "./roll.js";
+import { PrivacyUtility } from "./privacy.js";
+import { ROLL_TYPE, RollUtility } from "./roll.js";
 import { HIDE_NPC_ROLL_STYLES, SETTING_NAMES, SettingsUtility } from "./settings.js";
 
 export const MESSAGE_TYPE = {
@@ -14,211 +14,169 @@ export const MESSAGE_TYPE = {
     USAGE: "usage",
 }
 
-// The clickable affordance for changing a damage type: the type's label and icon,
-// but not the value beside them.
-const DAMAGE_TYPE_TOGGLE_SELECTOR = '.rsr-damage-type-toggle .total .label, .rsr-damage-type-toggle .total img';
+/**
+ * dnd5e 6 templates reused to render RSR's rolls in the system's compact chat style.
+ */
+const TEMPLATES = {
+    ROLL_COMPACT: "systems/dnd5e/templates/chat/parts/roll-compact.hbs",
+    ATTACK_CARD: "systems/dnd5e/templates/chat/attack-card.hbs",
+    DAMAGE_CARD: "systems/dnd5e/templates/chat/damage-card.hbs",
+    CARD_ROWS: "systems/dnd5e/templates/chat/parts/card-rows.hbs",
+    CARD_ROLLS: "systems/dnd5e/templates/chat/parts/card-rolls.hbs"
+};
+
+/**
+ * Native usage-card button actions that RSR handles itself on its cards (rolling onto the
+ * card instead of spawning a separate roll message).
+ */
+const NATIVE_ROLL_ACTIONS = {
+    rollAttack: ROLL_TYPE.ATTACK,
+    rollDamage: ROLL_TYPE.DAMAGE,
+    rollHealing: ROLL_TYPE.DAMAGE,
+    rollFormula: ROLL_TYPE.FORMULA
+};
+
+/**
+ * dnd5e 6 roll message types whose compact roll buttons RSR decorates (multiroll display,
+ * hidden NPC totals, breakdown action buttons, die reroll paths).
+ */
+const DECORATED_TYPES = new Set(["attack", "damage", "healing", "check", "save", "generic"]);
 
 export class ChatUtility {
+    /**
+     * The authoritative rolls of a message. RSR usage cards keep theirs in
+     * `flags.rsreforged.rolls` (mirrored to `message.rolls`); every other message uses its
+     * native rolls.
+     * @param {ChatMessage} message
+     * @returns {Roll[]}
+     */
     static getMessageRolls(message) {
-        const flagRolls = message.flags?.[MODULE_SHORT]?.rolls;
-        if (flagRolls && Array.isArray(flagRolls)) {
+        const flagRolls = message?.flags?.[MODULE_SHORT]?.rolls;
+        if (Array.isArray(flagRolls) && ChatUtility.getMessageType(message) === ROLL_TYPE.ACTIVITY) {
             return flagRolls.map(r => {
                 if (r instanceof Roll) return r;
-                try { return Roll.fromData(r); } catch(e) { return null; }
+                try { return Roll.fromData(r); } catch (e) { return null; }
             }).filter(r => r);
         }
-        return Array.from(message.rolls || []);
-    }
-
-    static async processChatMessage(message, html) {
-        if (!message || !html) return;
-        
-        if (!message.flags) message.flags = {};
-
-        const type = ChatUtility.getMessageType(message);
-
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED) && (!message.flags[MODULE_SHORT] || !message.flags[MODULE_SHORT].quickRoll)) {
-            _processVanillaMessage(message);
-            await $(html).addClass("rsr-hide");
-        }
-
-        if (!message.flags[MODULE_SHORT] || !message.flags[MODULE_SHORT].quickRoll) return;
-
-        if (!message.flags[MODULE_SHORT].processed) {
-            await $(html).addClass("rsr-hide");
-
-            if (type == ROLL_TYPE.ACTIVITY && message.isAuthor) {
-                if (message._rsrIsProcessing) return;
-                message._rsrIsProcessing = true;
-
-                try {
-                    if (CoreUtility.hasModule(MODULE_MIDI)) {
-                        const activityType = ChatUtility.getActivityType(message);
-                        if (activityType == ROLL_TYPE.ATTACK || (activityType == ROLL_TYPE.ABILITY_SAVE && message.flags[MODULE_SHORT].renderDamage)) {
-                            message.flags[MODULE_SHORT].processed = true;
-                        } else {
-                            await ActivityUtility.runActivityActions(message);
-                        }
-                    } else {
-                        await ActivityUtility.runActivityActions(message);
-                    }
-                } catch (err) {
-                    // Never leave the card hidden (rsr-hide) behind a failed roll.
-                    LogUtility.logError(`Failed to run activity rolls: ${err?.message ?? err}`, { ui: false });
-                    console.error(err);
-                    message._rsrIsProcessing = false;
-                    $(html).removeClass("rsr-hide");
-                }
-            }
-            return;
-        }
-
-        // Usage (ACTIVITY) cards have their own pipeline (re-tracking, tray state).
-        if (type === ROLL_TYPE.ACTIVITY) return ChatUtility.processUsageChatMessage(message, html);
-
-        if (game.dice3d && game.dice3d.isEnabled() && message._dice3danimating) {
-            await $(html).addClass("rsr-hide");
-            await game.dice3d.waitFor3DAnimationByMessageID(message.id);
-        }
-
-        let content = $(html).find('.message-content');
-        if (content.length === 0) content = $(html);
-        
-        if (message.isAuthor && SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_ROLL_MULTIROLL) && !ChatUtility.isMessageMultiRoll(message)) {
-            const newRolls = await _enforceDualRolls(message);
-
-            if (message.flags[MODULE_SHORT].dual) {
-                ChatUtility.updateChatMessage(message, {
-                    flags: message.flags
-                });
-                return;
-            }
-        }
-
-        await _injectContent(message, type, content);
-
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.OVERLAY_BUTTONS_ENABLED)) {
-            let hoverSetupComplete = false;
-            content.hover(async () => {
-                if (!hoverSetupComplete) {
-                    LogUtility.log("Injecting overlay hover buttons")
-                    hoverSetupComplete = true;
-                    await _injectOverlayButtons(message, content);
-                    _onOverlayHover(message, content);
-                }
-            });
-        }
-
-        if (message.flags[MODULE_SHORT].processed) {
-            await $(html).removeClass("rsr-hide");
-        }
-
-        _scrollChatToBottom();
+        return Array.from(message?.rolls || []);
     }
 
     /**
-     * Process a usage (ACTIVITY) chat message after dnd5e's system.getHTML() has rewritten
-     * the card content. Reached through processChatMessage from the dnd5e.renderChatMessage
-     * hook, which fires at the end of ChatMessage5e#renderHTML() once system.getHTML() has
-     * rendered usage-card.hbs into `.message-content`. The renderChatMessageHTML hook fires
-     * too early — dnd5e overwrites the DOM immediately after it returns.
-     *
-     * @param {ChatMessage5e} message  The chat message being rendered.
-     * @param {HTMLElement}   html     The rendered message element (plain HTMLElement in V14).
+     * Whether a message is a usage card managed by RSR.
+     * @param {ChatMessage} message
+     * @returns {boolean}
      */
-    static async processUsageChatMessage(message, html) {
-        if (!message || !html) return;
+    static isRsrUsageCard(message) {
+        return !!message && ChatUtility.getMessageType(message) === ROLL_TYPE.ACTIVITY && !!message.flags?.[MODULE_SHORT]?.quickRoll;
+    }
 
-        const flags = message.flags?.[MODULE_SHORT];
-        if (!flags?.quickRoll || !flags?.processed) return;
+    /**
+     * Whether the current user may change a message's rolls (retro advantage, bonus, crit).
+     * @param {ChatMessage} message
+     * @returns {boolean}
+     */
+    static canModify(message) {
+        return !!message && (game.user.isGM || message.isAuthor === true);
+    }
+
+    /**
+     * Persist changed rolls: always the native `rolls`, plus RSR's flag copy on RSR cards.
+     * @param {ChatMessage} message
+     * @param {Roll[]} rolls
+     * @param {object} [extra] Additional update data.
+     */
+    static async persistRolls(message, rolls, extra = {}) {
+        // Re-open the breakdown popover the change was made from once the card re-renders.
+        const candidate = message._rsrReopenCandidate;
+        if (candidate && (Date.now() - candidate.at) < 120000) message._rsrReopen = candidate;
+        delete message._rsrReopenCandidate;
+
+        const serialized = CoreUtility.serializeRolls(rolls);
+        const update = { ...extra, rolls: serialized };
+        if (ChatUtility.isRsrUsageCard(message)) {
+            message.flags[MODULE_SHORT].rolls = serialized;
+            update.flags = message.flags;
+        }
+        await ChatUtility.updateChatMessage(message, update);
+    }
+
+    /**
+     * Entry point from the dnd5e.renderChatMessage hook (every message, every render).
+     * @param {ChatMessage5e} message
+     * @param {HTMLElement} element The rendered message element.
+     */
+    static async processChatMessage(message, element) {
+        if (!message || !element) return;
+        if (!message.flags) message.flags = {};
+
+        // Privacy first and synchronously: a private roll must never flash for other players.
+        const hiddenFromUser = PrivacyUtility.applyToElement(message, element);
 
         const type = ChatUtility.getMessageType(message);
-        if (type !== ROLL_TYPE.ACTIVITY) return;
+        const flags = message.flags[MODULE_SHORT];
+        const isRsrCard = type === ROLL_TYPE.ACTIVITY && !!flags?.quickRoll;
 
-        const $html = $(html);
-
-        if (!message.isContentVisible) {
-            $html.removeClass("rsr-hide");
+        // The author rolls a pending card even when its content is hidden from them (blind).
+        if (isRsrCard && !flags.processed) {
+            element.classList.add("rsr-hide");
+            if (message.isAuthor && !message._rsrIsProcessing) await _runPendingActions(message, element);
             return;
         }
 
-        // dnd5e 6 MessageRegistry entries are rebuilt from `_source.system.origin` on load,
-        // which a usage card never has; re-track processed attack cards so
-        // registry.messages.get(<cardId>, "attack") keeps resolving (see
-        // ActivityUtility._registerCardAsAttack).
-        if (flags.renderAttack && ChatUtility.getMessageRolls(message).some(r => RollUtility.isRollOfType(r, CONFIG.Dice.D20Roll))) {
-            ActivityUtility.trackCardAsAttack(message);
-        }
+        if (hiddenFromUser) return;
+        PrivacyUtility.injectRevealButton(message, element);
+        PrivacyUtility.processSummaries(element);
 
-        if (game.dice3d && game.dice3d.isEnabled() && message._dice3danimating) {
-            await $html.addClass("rsr-hide");
-            await game.dice3d.waitFor3DAnimationByMessageID(message.id);
-        }
+        // dnd5e hides child messages that its origin card summarizes.
+        if (element.hidden) return;
 
-        let content = $html.find('.message-content');
-        if (content.length === 0) content = $html;
-
-        if (message.isAuthor && SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_ROLL_MULTIROLL) && !ChatUtility.isMessageMultiRoll(message)) {
-            await _enforceDualRolls(message);
-
-            if (flags.dual) {
-                ChatUtility.updateChatMessage(message, { flags: message.flags });
-                return;
+        if (isRsrCard) {
+            element.classList.add("rsr-hide");
+            try {
+                if (game.dice3d && game.dice3d.isEnabled() && message._dice3danimating) {
+                    await game.dice3d.waitFor3DAnimationByMessageID(message.id);
+                }
+                await _renderUsageCard(message, element);
+            } finally {
+                element.classList.remove("rsr-hide");
             }
         }
 
-        await _injectContent(message, type, content);
-        _applyDnd5eTrayState(message, content);
-
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.OVERLAY_BUTTONS_ENABLED)) {
-            let hoverSetupComplete = false;
-            content.hover(async () => {
-                if (!hoverSetupComplete) {
-                    LogUtility.log("Injecting overlay hover buttons");
-                    hoverSetupComplete = true;
-                    await _injectOverlayButtons(message, content);
-                    _onOverlayHover(message, content);
-                }
-            });
+        try {
+            _decorateMessage(message, element);
+        } catch (err) {
+            console.error("RSReforged | failed to decorate rolls", err);
         }
 
-        await $html.removeClass("rsr-hide");
-        _scrollChatToBottom();
+        const content = element.querySelector(".message-content") ?? element;
+        Hooks.callAll(`${MODULE_SHORT}.renderChatMessageContent`, message, content, type);
+
+        if (isRsrCard) _scrollChatToBottom();
     }
 
     static async updateChatMessage(message, update = {}, context = {}) {
-        if (message instanceof ChatMessage) {
-            if (update.rolls && Array.isArray(update.rolls)) {
-                update.rolls = CoreUtility.serializeRolls(update.rolls);
-            }
-            if (!update.flags) update.flags = message.flags;
-
-            // dnd5e 6 reads a card's rolls from `message.rolls` (the native
-            // <damage-application> tray, the attack->damage registry lookup). Keep the
-            // native rolls of RSR usage cards in step with RSR's authoritative flag copy
-            // after retroactive changes (crit, advantage, damage type, bonus, reroll).
-            // Skipped while a forced dual roll is pending (ALWAYS_ROLL_MULTIROLL): its
-            // un-kept 2d20 would total both dice.
-            const rsrFlags = update.flags?.[MODULE_SHORT];
-            if (update.rolls === undefined && message.type === "usage"
-                && Array.isArray(rsrFlags?.rolls) && rsrFlags.processed && !rsrFlags.dual) {
-                update.rolls = CoreUtility.serializeRolls(rsrFlags.rolls);
-            }
-
-            Object.assign(update, ActivityUtility.consumePendingTargetsUpdate(message));
-            await message.update(update, context);
+        if (!(message instanceof ChatMessage)) return;
+        if (update.rolls && Array.isArray(update.rolls)) {
+            update.rolls = CoreUtility.serializeRolls(update.rolls);
         }
+
+        // dnd5e 6 reads a card's rolls from `message.rolls` (the native <damage-application>
+        // tray, the attack->damage registry lookup). Keep the native rolls of RSR usage cards
+        // in step with RSR's authoritative flag copy.
+        const rsrFlags = update.flags?.[MODULE_SHORT];
+        if (update.rolls === undefined && ChatUtility.getMessageType(message) === ROLL_TYPE.ACTIVITY
+            && Array.isArray(rsrFlags?.rolls) && rsrFlags.processed) {
+            update.rolls = CoreUtility.serializeRolls(rsrFlags.rolls);
+        }
+
+        Object.assign(update, ActivityUtility.consumePendingTargetsUpdate(message));
+        await message.update(update, context);
     }
 
     /**
-     * Re-register a self-anchored attack card in dnd5e's MessageRegistry after its
-     * attack roll was mutated post-creation (retroactive advantage/disadvantage, or a
-     * bonus applied to the attack roll).
-     *
-     * RSR keeps authoritative rolls in flags.rsreforged.rolls and renders from them, but
-     * condition modules (AC5e) and dnd5e's native attack->damage association read the
-     * native message.rolls through the registry. Refresh the live document's rolls
-     * in-memory (updateChatMessage also persists them for usage cards) and re-track.
+     * Re-register a self-anchored attack card in dnd5e's MessageRegistry after its attack
+     * roll was mutated post-creation (retroactive advantage, bonus), refreshing the live
+     * document's rolls in-memory so AC5e / dnd5e read the changed roll.
      * @param {ChatMessage} message The activation card whose attack roll changed.
      */
     static resyncAttackRegistry(message) {
@@ -235,13 +193,98 @@ export class ChatUtility {
     }
 
     /**
-     * Map a chat message to the RSR roll type it represents.
-     *
-     * dnd5e 6.0 gives every roll its own message type with a system data model
-     * (data/chat-message/_module.mjs): "usage", "attack", "damage", "healing", "check"
-     * (system.type "ability"|"initiative", system.skill / system.tool), "save"
-     * (system.type "ability"|"concentration"|"death"), "generic" (formula), "hitDie", ...
-     * The 5.x `flags.dnd5e.roll.type` no longer exists; it is read for legacy messages.
+     * Fold a (pre-create, cancelled) child roll message into its RSR origin card.
+     * @param {ChatMessage} parent The RSR usage card.
+     * @param {ChatMessage} child The child roll message that will not be created.
+     */
+    static async mergeChildRollMessage(parent, child) {
+        const flags = parent.flags[MODULE_SHORT];
+        const childRolls = Array.from(child.rolls ?? []);
+        if (!childRolls.length) return;
+
+        let cleanType = null;
+        switch (child.type) {
+            case "attack": {
+                cleanType = CONFIG.Dice.D20Roll;
+                flags.renderAttack = true;
+                flags.isCritical = ActivityUtility.isCriticalRoll(childRolls[0]);
+                const mastery = child.system?.mastery ?? childRolls[0]?.options?.mastery;
+                if (mastery) flags.mastery = mastery;
+                const mode = child.system?.mode ?? childRolls[0]?.options?.attackMode;
+                if (mode) flags.attackMode = mode;
+                const ammunition = child.system?.ammunition ?? childRolls[0]?.options?.ammunition;
+                if (ammunition) flags.ammunition = ammunition;
+                ActivityUtility._syncAttackTargets(parent, child);
+                break;
+            }
+            case "damage":
+            case "healing":
+                cleanType = CONFIG.Dice.DamageRoll;
+                flags.renderDamage = true;
+                flags.manualDamage = false;
+                flags.isHealing = child.type === "healing" || ChatUtility.getActivityType(parent) === "heal";
+                if (childRolls.some(r => r.options?.isCritical)) flags.isCritical = true;
+                break;
+            case "generic":
+                cleanType = CONFIG.Dice.BasicRoll;
+                flags.renderFormula = true;
+                break;
+            default:
+                return;
+        }
+
+        const merged = RollUtility.mergeRollsByType(ChatUtility.getMessageRolls(parent), childRolls, cleanType);
+        flags.processed = true;
+        flags.quickRoll = true;
+        await _provideRollFeedback(childRolls, parent);
+        await ChatUtility.persistRolls(parent, merged);
+        if (child.type === "attack") ChatUtility.resyncAttackRegistry(parent);
+    }
+
+    /**
+     * Retroactively switch a d20 roll of a message to advantage / disadvantage / normal,
+     * using the second d20 multiroll already rolled.
+     * @param {ChatMessage} message
+     * @param {number} rollIndex Index into ChatUtility.getMessageRolls(message).
+     * @param {string} mode "adv" | "dis" | "normal".
+     * @param {object} [options]
+     * @param {boolean} [options.confirm=true] Honour the "confirm retroactive advantage" setting.
+     */
+    static async retroD20Mode(message, rollIndex, mode, { confirm = true } = {}) {
+        if (!message || !ChatUtility.canModify(message)) return;
+        const rolls = ChatUtility.getMessageRolls(message);
+        const roll = rolls[rollIndex];
+        if (!_isD20Roll(roll) || !RollUtility.getD20Term(roll)) return;
+        if (RollUtility.getD20Mode(roll) === mode) return;
+
+        if (confirm && SettingsUtility.getSettingValue(SETTING_NAMES.CONFIRM_RETRO_ADV)) {
+            const target = CoreUtility.localize(_modeLabelKey(mode));
+            const confirmed = await DialogUtility.getConfirmDialog(
+                CoreUtility.localize(`${MODULE_SHORT}.chat.prompts.retroAdv`, { target }));
+            if (!confirmed) return;
+        }
+
+        await RollUtility.setD20Mode(roll, mode);
+
+        const extra = {};
+        const isCard = ChatUtility.isRsrUsageCard(message);
+        if (isCard) {
+            message.flags[MODULE_SHORT].advantage = mode === "adv";
+            message.flags[MODULE_SHORT].disadvantage = mode === "dis";
+        } else if (typeof message.flavor === "string") {
+            extra.flavor = _flavorForMode(message.flavor, mode);
+        }
+
+        LogUtility.debug("retroD20Mode", message.id, rollIndex, mode, roll.total);
+        await ChatUtility.persistRolls(message, rolls, extra);
+        ChatUtility.resyncAttackRegistry(message);
+
+        if (!game.dice3d || !game.dice3d.isEnabled()) CoreUtility.playRollSound();
+    }
+
+    /**
+     * Map a chat message to the RSR roll type it represents (dnd5e 6 message types; the 5.x
+     * `flags.dnd5e.roll.type` is read for legacy messages).
      * @param {ChatMessage} message
      * @returns {string|null} A ROLL_TYPE value, or null.
      */
@@ -270,7 +313,6 @@ export class ChatUtility {
                 return ROLL_TYPE.ABILITY_SAVE;
         }
 
-        // Legacy (dnd5e < 6) messages still present in a world's chat log.
         const legacy = message.flags?.dnd5e;
         if (legacy?.messageType === MESSAGE_TYPE.USAGE || !!legacy?.use) return ROLL_TYPE.ACTIVITY;
         if (legacy?.messageType === MESSAGE_TYPE.ROLL || !!legacy?.roll) {
@@ -285,16 +327,11 @@ export class ChatUtility {
         return message.system?.activity?.type ?? message.flags?.dnd5e?.activity?.type;
     }
 
-    // dnd5e 5.3.0: getAssociatedActor() is now a native ChatMessage5e method. Use it as the
-    // primary path for actor resolution. The manual speaker fallback is kept for edge cases
-    // where the message is not a full ChatMessage5e instance (e.g. pre-create hooks).
     static getActorFromMessage(message) {
         if (typeof message.getAssociatedActor === "function") {
             const actor = message.getAssociatedActor();
             if (actor) return actor;
         }
-
-        // Manual fallback using speaker data.
         if (message.speaker?.token && message.speaker?.scene) {
             const token = game.scenes.get(message.speaker.scene)?.tokens?.get(message.speaker.token);
             if (token?.actor) return token.actor;
@@ -305,1277 +342,878 @@ export class ChatUtility {
         return null;
     }
 
-    static isMessageMultiRoll(message) {
-        const firstRoll = ChatUtility.getMessageRolls(message)[0];
-        return (message.flags[MODULE_SHORT].advantage || message.flags[MODULE_SHORT].disadvantage || message.flags[MODULE_SHORT].dual
-            || (firstRoll && firstRoll.options?.advantageMode !== CONFIG.Dice.D20Roll.ADV_MODE.NORMAL)) ?? false;
-    }
-
     static isMessageCritical(message) {
-        return message.flags[MODULE_SHORT].isCritical ?? false;
+        return message.flags?.[MODULE_SHORT]?.isCritical ?? false;
     }
 }
 
-/**
- * Keep the chat log pinned to the bottom after RSR unhides / rewrites a card,
- * but only when the user is already there. Mirrors core ChatLog behavior
- * (V13+ shows a "jump to bottom" pill instead of force-scrolling users who
- * have scrolled up). Unconditional scrolling yanked every client to the
- * newest roll on each render/update (issue #31).
- */
-function _scrollChatToBottom() {
-    if (ui.chat?.isAtBottom ?? true) ui.chat.scrollBottom();
-}
-
-/**
- * Reapply dnd5e's native Target/Apply tray policy after RSR has rebuilt a
- * processed usage card. This preserves autoCollapseChatTrays and any manual
- * state captured in ChatMessage5e._trayStates without duplicating that logic.
- */
-function _applyDnd5eTrayState(message, html) {
-    const root = html instanceof HTMLElement ? html : html?.[0];
-    if (!root || typeof message?._collapseTrays !== "function") return;
-    message._collapseTrays(root);
-}
-
-function _onOverlayHover(message, html) {
-    const hasPermission = game.user.isGM || message?.isAuthor;
-    const isItem = ChatUtility.getMessageType(message) === ROLL_TYPE.ACTIVITY;
-
-    html.find('.rsr-overlay').show();
-    html.find('.rsr-overlay-multiroll').toggle(hasPermission && !ChatUtility.isMessageMultiRoll(message));
-    html.find('.rsr-overlay-crit').toggle(hasPermission && isItem && !ChatUtility.isMessageCritical(message));
-}
-
-function _onOverlayHoverEnd(html) {
-    html.find(".rsr-overlay").attr("style", "display: none;");
-}
-
-function _onTooltipHover(message, html) {
-    const controlled = SettingsUtility._applyDamageToSelected && canvas?.tokens?.controlled?.length > 0;
-    const targeted = SettingsUtility._applyDamageToTargeted && game?.user?.targets?.size > 0;
-
-    if (controlled || targeted) {
-        html.find('.rsr-damage-buttons').show();
-        html.find('.rsr-damage-buttons').removeAttr("style");
-    }
-}
-
-function _onTooltipHoverEnd(html) {
-    html.find(".rsr-damage-buttons").attr("style", "display: none;height: 0px");
-}
-
-function _onDamageHover(message, html) {
-    const controlled = SettingsUtility._applyDamageToSelected && canvas?.tokens?.controlled?.length > 0;
-    const targeted = SettingsUtility._applyDamageToTargeted && game?.user?.targets?.size > 0;
-
-    if (controlled || targeted) {
-        html.find('.rsr-damage-buttons-xl').show();
-    }
-}
-
-function _onDamageHoverEnd(html) {
-    html.find(".rsr-damage-buttons-xl").attr("style", "display: none;");
-}
-
-function _setupCardListeners(message, html) {
-    if (SettingsUtility.getSettingValue(SETTING_NAMES.MANUAL_DAMAGE_MODE) > 0) {
-        html.find(`[data-action='rsr-${ROLL_TYPE.DAMAGE}']`).click(async event => {
-            await _processDamageButtonEvent(message, event);
-        });
-    }
-    
-    if (SettingsUtility._useRsrDamageApplyButtons) {
-        // Narrow to RSR's own action attributes so foreign buttons injected by
-        // third-party modules via the rsreforged.renderApplyDamageButtons hook
-        // (see docs/INTEGRATION.md) don't get their clicks swallowed by RSR's
-        // unconditional preventDefault()/stopPropagation() in the handlers.
-        const rsrApplyActions = '[data-action="rsr-apply-damage"], [data-action="rsr-apply-temp"]';
-        html.find('.rsr-damage-buttons').find(rsrApplyActions).click(async event => {
-            await _processApplyButtonEvent(message, event);
-        });
-
-        html.find('.rsr-damage-buttons-xl').find(rsrApplyActions).click(async event => {
-            await _processApplyTotalButtonEvent(message, event);
-        });
-    }
-
-    html.find(DAMAGE_TYPE_TOGGLE_SELECTOR).click(async event => {
-        await _processDamageTypeCycleEvent(message, event);
-    });
-
-    html.find(`[data-action='rsr-${ROLL_TYPE.CONCENTRATION}']`).click(async event => {
-        await _processBreakConcentrationButtonEvent(message, event);
-    });
-}
-
-function _processVanillaMessage(message) {
-    if (typeof message.updateSource === "function") {
-        message.updateSource({
-            [`flags.${MODULE_SHORT}`]: {
-                quickRoll: true,
-                processed: true,
-                useConfig: false
-            }
-        });
-    } else {
-        message.flags[MODULE_SHORT] = {
-            quickRoll: true,
-            processed: true,
-            useConfig: false
-        };
-    }
-}
-
-async function _enforceDualRolls(message) {
-    let dual = false;
-    let newRolls = ChatUtility.getMessageRolls(message);
-    
-    for (let i = 0; i < newRolls.length; i++) {
-        if (newRolls[i] instanceof CONFIG.Dice.D20Roll || newRolls[i].class === "D20Roll") {
-            newRolls[i] = await RollUtility.ensureMultiRoll(newRolls[i]);
-            dual = true;
-        }
-    }
-    
-    message.flags[MODULE_SHORT].dual = dual;
-    message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(newRolls);
-    return newRolls;
-}
-
-function _safeInsert(sectionHTML, targetHTML) {
-    if (targetHTML.length === 0 || targetHTML.is('.message-content, .chat-card') || targetHTML.hasClass('chat-message')) {
-        targetHTML.append(sectionHTML);
-    } else {
-        sectionHTML.insertBefore(targetHTML);
-    }
-}
-
-/**
- * Make an RSR-rendered `.dice-roll` expandable. dnd5e only binds its expand handler
- * (ChatMessage5e#_onClickDiceRoll) to rolls present when it enriches the card, and
- * RSR's rolls are injected afterwards. The core `data-action="expandRoll"` attribute is
- * dropped because dnd5e 6 routes every `[data-action]` click inside a system-typed card
- * to the card's data model (usage cards forward unknown actions to
- * Activity#onChatAction).
- * @param {JQuery} rollHTML
- * @returns {JQuery}
- */
-function _bindDiceRollToggle(rollHTML) {
-    rollHTML.removeAttr('data-action');
-    rollHTML.off('click.rsr').on('click.rsr', event => {
-        event.stopPropagation();
-        $(event.currentTarget).toggleClass('expanded');
-    });
-    return rollHTML;
-}
-
-/**
- * Render a roll with the classic core chat template (`.dice-roll > .dice-result >
- * .dice-formula / .dice-tooltip / h4.dice-total`) that RSR's sections, multiroll overlay
- * and apply buttons are built around. dnd5e 6 system-typed messages render rolls with the
- * compact `roll-compact.hbs` button + popover instead, so RSR renders the roll itself
- * rather than reusing the card's markup. dnd5e's roll-breakdown.hbs tooltip template is
- * still used (Roll.TOOLTIP_TEMPLATE).
- * @param {Roll} roll An evaluated roll.
- * @returns {Promise<JQuery>} The `.dice-roll` element.
- */
-async function _renderRollElement(roll) {
-    const rendered = $(await roll.render({ isPrivate: false }));
-    let rollHTML = rendered.filter('.dice-roll');
-    if (!rollHTML.length) rollHTML = rendered.find('.dice-roll');
-    if (!rollHTML.length) rollHTML = $('<div class="dice-roll"></div>').append(rendered);
-    return _bindDiceRollToggle(rollHTML.first());
-}
-
-/**
- * Render damage rolls as a single classic `.dice-roll` with dnd5e 6's per-damage-type
- * breakdown (templates/chat/parts/damage-breakdown.hbs — the same partial and part data
- * DamageMessageData#_prepareContext uses), so each tooltip part carries its damage type
- * icon/label for RSR's apply buttons and damage type toggles.
- * @param {DamageRoll[]} rolls Evaluated damage rolls.
- * @returns {Promise<JQuery>}
- */
-async function _renderDamageRollElement(rolls) {
-    const aggregate = CONFIG.DND5E.aggregateDamageDisplay;
-    const aggregateDamageRolls = globalThis.dnd5e?.dice?.aggregateDamageRolls;
-    let display = rolls;
-    if (aggregate && typeof aggregateDamageRolls === "function") {
-        try { display = aggregateDamageRolls(rolls); } catch (err) { display = rolls; }
-    }
-
-    const parts = display.map(roll => {
-        const part = typeof roll.aggregateTerms === "function"
-            ? roll.aggregateTerms()
-            : {
-                type: roll.options?.type,
-                total: Math.max(0, roll.total),
-                constant: 0,
-                dice: roll.dice.flatMap(d => d.getTooltipData().rolls),
-                icon: null,
-                method: null
-            };
-        part.config = CONFIG.DND5E.damageTypes[part.type] ?? CONFIG.DND5E.healingTypes[part.type] ?? null;
-        part.label = part.config?.labelShort ?? part.config?.label ?? "";
-        return part;
-    });
-    const formula = display.map(r => aggregate ? r.formula : ` + ${r.formula}`).join("").replace(/^ \+ /, "");
-    const total = display.reduce((sum, roll) => sum + Math.max(0, roll.total), 0);
-    const breakdown = await foundry.applications.handlebars.renderTemplate(
-        "systems/dnd5e/templates/chat/parts/damage-breakdown.hbs", { parts }
-    );
-
-    const rollHTML = $(`<div class="dice-roll"><div class="dice-result"><div class="dice-formula"></div>${breakdown}<h4 class="dice-total"></h4></div></div>`);
-    rollHTML.find('.dice-formula').text(formula);
-    rollHTML.find('.dice-total').text(total);
-    return _bindDiceRollToggle(rollHTML);
-}
-
-/**
- * Elements of the card that belong to other messages: dnd5e 6 renders descendant roll
- * messages (saves against this usage, etc.) as `.card-summary` blocks inside the origin
- * card when the chatCardSummary setting is on. RSR must never touch those.
- * @param {JQuery} html
- * @param {string} selector
- * @returns {JQuery}
- */
-function _findOwn(html, selector) {
-    return html.find(selector).filter((_, el) => !el.closest('.card-summary'));
-}
-
-/**
- * Remove the dnd5e usage-card buttons RSR replaces and return the element RSR's sections
- * should be inserted before (or appended to).
- *
- * dnd5e 6 renders usage buttons in card-face.hbs as
- * `section.icon-row > ul > li > button[data-action]`, with grouped buttons using
- * `data-forward-action` instead of `data-action`. The legacy `.card-buttons` block no
- * longer exists (it is still honoured for cards with legacy custom content).
- * @param {JQuery} html The `.message-content` element.
- * @param {string[]} actions Button actions to remove.
- * @returns {JQuery} Anchor element.
- */
-function _removeCardButtons(html, actions) {
-    const buttonRows = _findOwn(html, 'section.icon-row')
-        .filter((_, row) => $(row).find('button[data-action], button[data-forward-action]').length > 0);
-
-    for (const action of actions) {
-        _findOwn(html, `[data-action="${action}"], [data-forward-action="${action}"]`).each((_, el) => {
-            const li = $(el).closest('li');
-            if (li.length && buttonRows.has(li[0]).length && li.find('button').length <= 1) li.remove();
-            else $(el).remove();
-        });
-    }
-
-    let anchor = null;
-    buttonRows.each((_, row) => {
-        if ($(row).find('button').length === 0) $(row).remove();
-        else anchor ??= $(row);
-    });
-
-    if (!anchor) {
-        const legacy = _findOwn(html, '.card-buttons').first();
-        if (legacy.length) anchor = legacy;
-    }
-    if (!anchor) {
-        const card = _findOwn(html, '.chat-card').first();
-        anchor = card.length ? card : html;
-    }
-    return anchor;
-}
-
-function _snapshotSupplements(html) {
-    return html.find('.supplement').map((_, element) => element.outerHTML).get().filter(Boolean);
-}
-
-function _storeSupplementsForMerge(parent, type, html) {
-    parent.flags[MODULE_SHORT].supplements ??= {};
-    parent.flags[MODULE_SHORT].supplements[type] = _snapshotSupplements(html);
-}
-
-function _getRollMastery(message) {
-    const roll = ChatUtility.getMessageRolls(message).find(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll" || r.constructor?.name === "D20Roll");
-    const activity = ActivityUtility._getActivityFromMessage(message);
-    const mastery = message.flags?.[MODULE_SHORT]?.mastery
-        ?? roll?.options?.mastery
-        ?? message.flags?.dnd5e?.roll?.mastery
-        ?? message.system?.mastery
-        ?? activity?.item?.system?.mastery;
-    return typeof mastery === "string" ? mastery.toLowerCase() : "";
-}
-
-function _getMasteryLabel(mastery) {
-    const label = CONFIG.DND5E?.weaponMasteries?.[mastery]?.label;
-    if (label) return CoreUtility.localize(label);
-    if (!mastery) return "";
-    return `${mastery[0].toUpperCase()}${mastery.slice(1)}`;
-}
-
-function _getMasteryReference(mastery) {
-    const reference = CONFIG.DND5E?.weaponMasteries?.[mastery];
-    return reference?.reference ?? reference?.uuid ?? "";
-}
-
-function _createMasterySupplement({ mastery, label, uuid }) {
-    if (!label || !uuid) return null;
-
-    const docType = uuid.startsWith('JournalEntryPage.') ? 'JournalEntryPage' : 'JournalEntry';
-    const supplement = $('<p class="supplement"></p>');
-    supplement.append($('<strong></strong>').text('Mastery: '));
-
-    const link = $('<a class="content-link"></a>');
-    link.attr({
-        draggable: "true",
-        "data-link": "",
-        "data-type": docType,
-        "data-uuid": uuid,
-        "data-tooltip": label,
-        "data-tooltip-direction": "UP",
-        "aria-label": `${label} weapon mastery`
-    });
-    link.text(label);
-    supplement.append(link);
-
-    return supplement[0].outerHTML;
-}
-
-function _restoreMasterySupplement(message, host) {
-    if (!host?.length) return;
-
-    const mastery = _getRollMastery(message);
-    const label = _getMasteryLabel(mastery);
-    const uuid = _getMasteryReference(mastery);
-    if (!label || !uuid) return;
-
-    const existing = host.find('.supplement a').filter((_, element) => {
-        return element.dataset?.tooltip === label || element.dataset?.uuid === uuid;
-    });
-    if (existing.length) return;
-
-    const supplement = $(_createMasterySupplement({ mastery, label, uuid }));
-    supplement.attr('data-rsr-generated-mastery', mastery);
-    supplement.addClass('rsr-supplement');
-    host.append(supplement);
-}
-
-function _restoreStoredSupplements(message, html) {
-    const supplements = message.flags?.[MODULE_SHORT]?.supplements ?? {};
-
-    html.find('[data-rsr-restored-supplement], [data-rsr-generated-mastery]').remove();
-
-    const hosts = {
-        [ROLL_TYPE.ATTACK]: html.find('.rsr-section-attack'),
-        [ROLL_TYPE.DAMAGE]: html.find('.rsr-section-damage')
-    };
-
-    for (const [type, snippets] of Object.entries(supplements)) {
-        const host = hosts[type];
-        if (!host?.length || !Array.isArray(snippets) || snippets.length === 0) continue;
-
-        const restored = $(snippets.join(""));
-        restored.attr('data-rsr-restored-supplement', type);
-        restored.addClass('rsr-supplement');
-        host.append(restored);
-    }
-}
-
-async function _injectContent(message, type, html) {
-    LogUtility.log("Injecting content into chat message");
-
-    // Integration surface — fires before any DOM removal so third-party modules
-    // (wm5e, automated-conditions-5e, etc.) can snapshot the dnd5e-rendered card
-    // before RSR strips it. See docs/INTEGRATION.md.
-    Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, html, type);
-
-    // dnd5e 6.0: a roll message's origin card is `system.origin` (ForeignDocumentField),
-    // resolved by ChatMessage5e#getOriginatingMessage(), which returns `this` when there
-    // is none. Only a different message is a real parent. `flags.dnd5e.originatingMessage`
-    // is the 5.x location (read for legacy messages; RSR 4.x also stamped a card's own id
-    // there, which is not a parent).
-    let parent = null;
-    if (typeof message.getOriginatingMessage === "function") {
-        const origin = message.getOriginatingMessage();
-        if (origin && origin !== message) parent = origin;
-    }
-    if (!parent && message.flags?.dnd5e?.originatingMessage
-        && message.flags.dnd5e.originatingMessage !== message.id) {
-        parent = game.messages.get(message.flags.dnd5e.originatingMessage) ?? null;
-    }
-
-    message.flags[MODULE_SHORT].displayChallenge = parent?.shouldDisplayChallenge ?? message.shouldDisplayChallenge;
-    message.flags[MODULE_SHORT].displayAttackResult = game.user.isGM || (game.settings.get("dnd5e", "attackRollVisibility") !== "none");
-
-    switch (type) {
-        case ROLL_TYPE.DAMAGE:
-            if (!message.system?.item?.id && !message.flags?.dnd5e?.item?.id) {
-                if (!message.isContentVisible) return;
-                const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
-
-                message.flags[MODULE_SHORT].renderDamage = true;
-
-                const mRolls = ChatUtility.getMessageRolls(message);
-                message.flags[MODULE_SHORT].isCritical = ActivityUtility.isCriticalRoll(mRolls[0]);
-
-                if (useRsrDamageButtons) {
-                    const rolls = _getDamageRolls(message);
-                    if (!rolls.length) break;
-
-                    const rollHTML = await _renderDamageRollElement(rolls);
-                    rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
-                    rollHTML.find('.dice-result').addClass('rsr-damage');
-
-                    // dnd5e 6 damage-card.hbs: `section.icon-row > button.dice-roll + .roll-breakdown`
-                    // followed by the native <damage-application> tray, which RSR's buttons replace.
-                    const nativeRoll = _findOwn(html, '.dice-roll').first();
-                    const nativeRow = nativeRoll.closest('section.icon-row');
-                    if (nativeRow.length) nativeRow.replaceWith(rollHTML);
-                    else if (nativeRoll.length) nativeRoll.replaceWith(rollHTML);
-                    else html.append(rollHTML);
-                    _findOwn(html, '.roll-breakdown').remove();
-                    _findOwn(html, 'damage-application').remove();
-
-                    await _injectApplyDamageButtons(message, html);
-                    _injectDamageTypeToggles(message, html);
-                }
-
-                break;
-            }
-            // falls through to ATTACK when item id is present
-        case ROLL_TYPE.ATTACK:
-            if (parent && parent.flags[MODULE_SHORT] && message.isAuthor) {
-                _storeSupplementsForMerge(parent, type, html);
-
-                if (type === ROLL_TYPE.ATTACK) {
-                    parent.flags[MODULE_SHORT].renderAttack = true;
-                    const mastery = message.system?.mastery ?? ChatUtility.getMessageRolls(message)[0]?.options?.mastery;
-                    if (mastery) parent.flags[MODULE_SHORT].mastery = mastery;
-                    // wm5e and other mastery modules read the card's target descriptors to
-                    // resolve the attacked actor; copy them from the child roll message
-                    // (dnd5e 6: system.targets) before RSR deletes it.
-                    ActivityUtility._syncAttackTargets(parent, message);
-                }
-
-                if (type === ROLL_TYPE.DAMAGE) {
-                    parent.flags[MODULE_SHORT].renderDamage = true;
-
-                    const mRolls = ChatUtility.getMessageRolls(message);
-                    parent.flags[MODULE_SHORT].isCritical = ActivityUtility.isCriticalRoll(mRolls[0]);
-
-                    parent.flags[MODULE_SHORT].isHealing = message.type === "healing"
-                        || ChatUtility.getActivityType(message) === "heal";
-                }
-
-                parent.flags[MODULE_SHORT].quickRoll = true;
-
-                let newParentRolls = ChatUtility.getMessageRolls(parent);
-                let newMsgRolls = ChatUtility.getMessageRolls(message);
-                const cleanType = type === ROLL_TYPE.ATTACK
-                    ? CONFIG.Dice.D20Roll
-                    : type === ROLL_TYPE.DAMAGE
-                        ? CONFIG.Dice.DamageRoll
-                        : null;
-                newParentRolls = RollUtility.mergeRollsByType(newParentRolls, newMsgRolls, cleanType);
-
-                const serializedRolls = CoreUtility.serializeRolls(newParentRolls);
-                parent.flags[MODULE_SHORT].rolls = serializedRolls;
-
-                ChatUtility.updateChatMessage(parent, {
-                    flags: parent.flags,
-                    rolls: serializedRolls,
-                    flavor: "vanilla",
-                });
-
-                message.flags[MODULE_SHORT].processed = false;
-                message.delete();
+/* -------------------------------------------- */
+/*  Pending quick-roll actions                  */
+/* -------------------------------------------- */
+
+async function _runPendingActions(message, element) {
+    message._rsrIsProcessing = true;
+    try {
+        if (CoreUtility.hasModule(MODULE_MIDI)) {
+            const activityType = ChatUtility.getActivityType(message);
+            if (activityType == ROLL_TYPE.ATTACK || (activityType == ROLL_TYPE.ABILITY_SAVE && message.flags[MODULE_SHORT].renderDamage)) {
+                message.flags[MODULE_SHORT].processed = true;
+                await ChatUtility.updateChatMessage(message, { flags: message.flags });
                 return;
             }
-            break;
-        case ROLL_TYPE.SKILL:
-        case ROLL_TYPE.ABILITY_SAVE:
-        case ROLL_TYPE.ABILITY_TEST:
-        case ROLL_TYPE.DEATH_SAVE:
-        case ROLL_TYPE.TOOL:
-        case ROLL_TYPE.CONCENTRATION: {
-            if (!message.isContentVisible) return;
-
-            const roll = ChatUtility.getMessageRolls(message)[0];
-            if (!roll) return;
-
-            // Wire the display options first; _configureRollVisibility overrides
-            // them when the roll should be hidden from this user.
-            roll.options.displayChallenge = message.flags[MODULE_SHORT].displayChallenge;
-            roll.options.forceSuccess = message.system?.forceSuccess ?? message.flags?.dnd5e?.roll?.forceSuccess;
-
-            const checkActor = ChatUtility.getActorFromMessage(message);
-            _configureRollVisibility(roll, type, checkActor);
-
-            const render = await RenderUtility.render(TEMPLATE.MULTIROLL, { roll, key: type });
-
-            // dnd5e 6 check/save cards render the roll as a compact button
-            // (roll-compact.hbs: `button.dice-roll` + `.roll-breakdown` popover) inside a
-            // `section.icon-row`. Replace it with the classic roll markup carrying RSR's
-            // multiroll display.
-            const rollHTML = await _renderRollElement(roll);
-            rollHTML.addClass('rsr-roll');
-            rollHTML.find('.dice-total').replaceWith(render);
-            rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
-
-            if (roll.options.hideFinalResult) {
-                _applyHiddenRollPresentation(rollHTML, roll);
-            }
-
-            const nativeRoll = _findOwn(html, '.dice-roll').first();
-            if (nativeRoll.length) {
-                nativeRoll.next('.roll-breakdown').remove();
-                nativeRoll.replaceWith(rollHTML);
-            } else {
-                html.append(rollHTML);
-            }
-
-            // dnd5e 6 save cards offer their own "Break Concentration" button
-            // (SaveMessageData#canBreakConcentration); only add RSR's on legacy cards.
-            if (message.flags[MODULE_SHORT].isConcentration && message.type !== "save") {
-                await _injectBreakConcentrationButton(message, html);
-            }
-            break;
         }
-        case ROLL_TYPE.ACTIVITY: {
-            if (!message.isContentVisible) return;
-            const useRsrDamageButtons = SettingsUtility._useRsrDamageApplyButtons;
-            const flags = message.flags[MODULE_SHORT];
-            const rendersRolls = flags.renderAttack || flags.renderFormula || flags.renderDamage || flags.manualDamage;
-
-            // dnd5e 6 renders usage cards from usage-card.hbs, which contains no rolls. Only
-            // legacy custom-content cards can carry stray roll markup; strip it (outside
-            // native `.card-summary` blocks) so it is not duplicated by RSR's sections.
-            if (useRsrDamageButtons || rendersRolls) {
-                _findOwn(html, '.dice-roll').remove();
-            }
-
-            if (useRsrDamageButtons) {
-                // In RSR apply mode RSR's buttons are the apply UI; drop any system tray
-                // that is not part of a descendant summary.
-                _findOwn(html, 'damage-application').each((_, el) => {
-                    const wrapper = $(el).parent('.card-tray.damage-tray');
-                    (wrapper.length ? wrapper : $(el)).remove();
-                });
-            }
-
-            const removeActions = [];
-            if (flags.renderAttack !== undefined) removeActions.push("rollAttack", "attack");
-            if (flags.manualDamage || flags.renderDamage) removeActions.push("rollDamage", "damage", "rollHealing", "heal");
-            if (flags.renderFormula) removeActions.push("rollFormula", "formula");
-            const actions = _removeCardButtons(html, removeActions);
-
-            if (flags.renderAttack !== undefined) {
-                await _injectAttackRoll(message, actions, { contentHtml: html });
-            }
-
-            if (flags.manualDamage) {
-                await _injectDamageButton(message, actions);
-            }
-
-            if (flags.renderDamage) {
-                await _injectDamageRoll(message, actions, { mode: useRsrDamageButtons ? "rsr" : "native", contentHtml: html });
-            }
-
-            if (flags.renderFormula) {
-                await _injectFormulaRoll(message, actions, { contentHtml: html });
-            }
-
-            if (useRsrDamageButtons) {
-                await _injectApplyDamageButtons(message, html);
-                _injectDamageTypeToggles(message, html);
-            }
-
-            // Supplements: snapshots stored when child roll messages were merged
-            // (vanilla-mode), plus the weapon mastery reference for the attack. dnd5e 6's
-            // own card-face supplements (materials, trigger) stay where the system put them.
-            _restoreStoredSupplements(message, html);
-
-            const attackSection = html.find('.rsr-section-attack');
-            if (attackSection.length) {
-                _restoreMasterySupplement(message, attackSection);
-                attackSection.find('.supplement').addClass('rsr-supplement');
-            }
-            html.find('.rsr-section-damage .supplement').addClass('rsr-supplement');
-            break;
-        }
-        default:
-            break;
+        await ActivityUtility.runActivityActions(message);
+    } catch (err) {
+        // Never leave the card hidden (rsr-hide) behind a failed roll.
+        LogUtility.logError(`Failed to run activity rolls: ${err?.message ?? err}`, { ui: false });
+        console.error(err);
+        message._rsrIsProcessing = false;
+        element.classList.remove("rsr-hide");
     }
-
-    _setupCardListeners(message, html);
-
-    // Integration surface — fires after RSR has finished its DOM rewrite. Primary
-    // decoration point for third-party modules. See docs/INTEGRATION.md.
-    Hooks.callAll(`${MODULE_SHORT}.renderChatMessageContent`, message, html, type);
-}
-
-async function _injectAttackRoll(message, html, { contentHtml = html } = {}) {
-    const rolls = ChatUtility.getMessageRolls(message);
-    
-    const roll = rolls.find(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll" || r.constructor?.name === "D20Roll");
-
-    if (!roll) return;
-    
-    RollUtility.resetRollGetters(roll);
-
-    roll.options.displayChallenge = message.flags[MODULE_SHORT].displayAttackResult;
-
-    // getAssociatedActor() resolves token actors (which are not in game.actors).
-    const actor = ChatUtility.getActorFromMessage(message);
-    _configureRollVisibility(roll, ROLL_TYPE.ATTACK, actor);
-
-    const render = await RenderUtility.render(TEMPLATE.MULTIROLL, { roll, key: ROLL_TYPE.ATTACK });
-    const rollHTML = await _renderRollElement(roll);
-    rollHTML.find('.dice-total').replaceWith(render);
-    rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
-
-    if (roll.options.hideFinalResult) {
-        _applyHiddenRollPresentation(rollHTML, roll);
-    }   
-
-    // The stored fallback covers quantity-one autoDestroy ammunition, which is deleted
-    // before RSR renders the combined card.
-    const ammunitionId = message.flags[MODULE_SHORT].ammunition;
-    const liveAmmunition = actor?.items?.get(ammunitionId);
-    const storedAmmunition = message.flags[MODULE_SHORT].ammunitionData ?? message.flags?.dnd5e?.roll?.ammunitionData;
-    const storedAmmunitionId = storedAmmunition?._id ?? storedAmmunition?.id;
-    const ammo = liveAmmunition?.name
-        ?? (storedAmmunition && storedAmmunitionId === ammunitionId
-            ? storedAmmunition.name
-            : undefined);
-
-    const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION,
-    {
-        section: `rsr-section-${ROLL_TYPE.ATTACK}`,
-        title: CoreUtility.localize("DND5E.Attack"),
-        icon: "<dnd5e-icon src=\"systems/dnd5e/icons/svg/trait-weapon-proficiencies.svg\"></dnd5e-icon>",
-        subtitle: ammo ? `${CoreUtility.localize("DND5E.CONSUMABLE.Type.Ammunition.Label")} - ${ammo}` : undefined
-    }));
-    
-    $(sectionHTML).append(rollHTML);
-
-    const targetsHTML = _renderAttackTargets(message, roll);
-    if (targetsHTML) $(sectionHTML).append(targetsHTML);
-
-    _safeInsert(sectionHTML, html);
-
-    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.ATTACK, sectionHTML);
 }
 
 /**
- * Render the hit/miss target row for the combined card's attack, mirroring dnd5e 6's
- * attack-card.hbs / AttackMessageData#_prepareTargetsContext. RSR's attack never becomes
- * a dnd5e "attack" message, so the system does not render this row for it.
- * @param {ChatMessage} message The usage card.
- * @param {D20Roll} roll The attack roll.
- * @returns {JQuery|null}
+ * Keep the chat log pinned to the bottom after RSR unhides / rewrites a card, but only when
+ * the user is already there (issue #31).
  */
-function _renderAttackTargets(message, roll) {
-    const targets = ActivityUtility.getCardTargets(message);
-    if (!Array.isArray(targets) || !targets.length) return null;
-
-    const visibility = game.settings.get("dnd5e", "attackRollVisibility");
-    const hidden = roll.options?.hideFinalResult || message.flags[MODULE_SHORT].dual;
-    const showAC = !hidden && (game.user.isGM || (visibility === "all"));
-    const showResult = !hidden && (game.user.isGM || (visibility !== "none"));
-    const isCritical = ActivityUtility.isCriticalRoll(roll);
-    const isFumble = roll.isFumble === true;
-    const esc = foundry.utils.escapeHTML;
-
-    const entries = targets.map(target => {
-        const ac = Number.isFinite(target.ac) ? target.ac : null;
-        const isMiss = (ac === null) || (!isCritical && ((roll.total < ac) || isFumble));
-        return { ...target, ac, isMiss };
-    }).sort((lhs, rhs) => (lhs.isMiss === rhs.isMiss) ? 0 : (lhs.isMiss ? 1 : -1));
-
-    const items = entries.map(target => {
-        const result = showResult ? (target.isMiss ? " data-miss" : " data-hit") : "";
-        const value = showAC ? ` data-value="${target.ac ?? "∞"}"` : "";
-        const token = esc(target.token ?? target.actor ?? "");
-        const name = esc(target.name ?? "");
-        return `<li><target-pill${result}${value}><label>${name}</label><datalist><option value="${token}">${name}</option></datalist></target-pill></li>`;
-    }).join("");
-
-    const label = esc(CoreUtility.localize("DND5E.CHATMESSAGE.Row.Targets"));
-    return $(`<section class="icon-row rsr-attack-targets"><i class="fa-fw fa-solid fa-bullseye" aria-label="${label}"></i><ul class="unlist targets pills">${items}</ul></section>`);
+function _scrollChatToBottom() {
+    if (ui.chat?.isAtBottom ?? true) ui.chat?.scrollBottom?.();
 }
 
-function _configureRollVisibility(roll, rollType, actor) {
-    roll.options.hideFinalResult = SettingsUtility.shouldHideNpcRollForActor(actor, rollType);
-    if (roll.options.hideFinalResult) {
-        // Suppress everything that would reveal the outcome of a hidden roll:
-        // the DC pass/fail icon and forced-success crit styling.
-        roll.options.displayChallenge = false;
-        roll.options.forceSuccess = false;
-        // Record which presentation style the renderer + DOM pass should use.
-        roll.options.hideRollStyle = SettingsUtility.getHideNpcRollStyle();
-    }
-}
-
-function _applyHiddenRollPresentation(rollHTML, roll) {
-    if (!roll?.options?.hideFinalResult) return;
-
-    const isBreakdown = roll.options.hideRollStyle === HIDE_NPC_ROLL_STYLES.BREAKDOWN;
-
-    if (isBreakdown) {
-        // Breakdown style (issue #23): the total is shown, so the entire dice
-        // breakdown must be masked — natural d20 included. Drop every tooltip part.
-        rollHTML.find('.dice-tooltip .tooltip-part').remove();
-    } else {
-        // Total style: reveal only the natural d20. Removing flat modifiers
-        // (.tooltip-part.constant) is not enough: bonus dice such as Bless or
-        // Guidance render as their own non-constant tooltip part (li.roll.die.dN)
-        // and would otherwise leak both the buff and the rolled value. Drop every
-        // tooltip part that is not a d20 die.
-        rollHTML.find('.dice-tooltip .tooltip-part').each((_i, el) => {
-            const part = $(el);
-            if (part.find('.roll.d20').length === 0) part.remove();
-        });
-    }
-
-    rollHTML.find('.dice-formula').text("1d20 + " + CoreUtility.localize(`${MODULE_SHORT}.chat.hide`));
-}
-
-async function _injectFormulaRoll(message, html, { contentHtml = html } = {}) {
-    const rolls = ChatUtility.getMessageRolls(message);
-    
-    // Exact class match: D20Roll and DamageRoll are BasicRoll subclasses.
-    const roll = rolls.find(r => RollUtility.isRollOfType(r, CONFIG.Dice.BasicRoll));
-
-    if (!roll) return;
-
-    const rollHTML = await _renderRollElement(roll);
-    rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
-
-    const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION,
-    {
-        section: `rsr-section-${ROLL_TYPE.FORMULA}`,
-        title: message.flags[MODULE_SHORT].formulaName ?? CoreUtility.localize("DND5E.OtherFormula"),
-        icon: "<i class=\"fas fa-dice\"></i>"
-    }));
-    
-    $(sectionHTML).append(rollHTML);
-    _safeInsert(sectionHTML, html);
-
-    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.FORMULA, sectionHTML);
-}
-
-async function _injectDamageRoll(message, html, { mode = "rsr", contentHtml = html } = {}) {
-    const rolls = _getDamageRolls(message);
-
-    if (!rolls || rolls.length === 0) return;
-
-    const rollHTML = await _renderDamageRollElement(rolls);
-
-    if (mode === "native") {
-        // Native apply mode defers damage application to dnd5e 6's own tray. The
-        // <damage-application> element reads the damage from the card's `message.rolls`
-        // (DamageApplicationElement#connectedCallback), which RSR keeps in step with its
-        // flag copy. Shown to the same users dnd5e's damage-card.hbs shows it to.
-        const nativeHTML = $('<div class="rsr-native-damage"></div>').append(rollHTML);
-
-        // The RSR-mode branch below tags its section title with "(Versatile)"; tag the
-        // formula here so the player gets the same signal.
-        if (message.flags[MODULE_SHORT].versatile) {
-            const label = CoreUtility.localize("DND5E.Versatile");
-            const tag = `<span class="rsr-versatile-tag">(${label})</span>`;
-            const formula = rollHTML.find('.dice-formula').first();
-            if (formula.length) formula.append(` ${tag}`);
-        }
-
-        const showTray = game.user.isGM || !!globalThis.dnd5e?.settings?.allowPlayerDamageTray;
-        if (showTray && !_findOwn(contentHtml, 'damage-application').length) {
-            nativeHTML.append('<damage-application class="dnd5e2"></damage-application>');
-        }
-
-        _safeInsert(nativeHTML, html);
-
-        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.DAMAGE, nativeHTML);
-        return;
-    }
-
-    rollHTML.find('.dice-tooltip').prepend(rollHTML.find('.dice-formula'));
-    rollHTML.find('.dice-result').addClass('rsr-damage');
-
-    const header = message.flags[MODULE_SHORT].isHealing
-        ? {
-            section: `rsr-section-${ROLL_TYPE.DAMAGE}`,
-            title: CoreUtility.localize("DND5E.HEAL.HealingButton"),
-            icon: "<i class=\"fas fa-heart\"></i>"
-        }
-        : {
-            section: `rsr-section-${ROLL_TYPE.DAMAGE}`,
-            title: `${CoreUtility.localize("DND5E.Damage")} ${message.flags[MODULE_SHORT].versatile ? "(" + CoreUtility.localize("DND5E.Versatile") + ")": ""}`,
-            icon: "<i class=\"fas fa-burst\"></i>",
-            subtitle: message.flags[MODULE_SHORT].isCritical ? `${CoreUtility.localize("DND5E.CriticalHit")}!` : undefined,
-            critical: message.flags[MODULE_SHORT].isCritical
-        }
-
-    const sectionHTML = $(await RenderUtility.render(TEMPLATE.SECTION, header));
-
-    $(sectionHTML).append(rollHTML);
-
-    const onSave = _getDamageOnSaveSupplement(message);
-    if (onSave) $(sectionHTML).append(onSave);
-
-    _safeInsert(sectionHTML, html);
-
-    Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, contentHtml, ROLL_TYPE.DAMAGE, sectionHTML);
-}
-
-/**
- * The "On Save" note dnd5e 6 shows on a save activity's damage card (damage-card.hbs,
- * DamageMessageData `onSave`), for RSR's combined card.
- * @param {ChatMessage} message
- * @returns {JQuery|null}
- */
-function _getDamageOnSaveSupplement(message) {
-    const activity = ActivityUtility._getActivityFromMessage(message);
-    const onSave = activity?.type === "save" ? activity.damage?.onSave : null;
-    if (!onSave) return null;
-    const key = `DND5E.SAVE.FIELDS.damage.onSave.${onSave.capitalize()}`;
-    if (!game.i18n.has(key)) return null;
-    const supplement = $('<p class="supplement rsr-supplement"></p>');
-    supplement.append($('<strong></strong>').text(CoreUtility.localize("DND5E.SAVE.OnSave")));
-    supplement.append(document.createTextNode(` ${CoreUtility.localize(key)}`));
-    return supplement;
-}
-
-async function _injectDamageButton(message, html) {
-    const button = message.flags[MODULE_SHORT].isHealing
-        ? {
-            title: CoreUtility.localize("DND5E.HEAL.HealingButton"),
-            icon: "<i class=\"fas fa-heart\"></i>"
-        } 
-        : {
-            title: CoreUtility.localize("DND5E.Damage"),
-            icon: "<i class=\"fas fa-burst\"></i>"
-        }
-
-    const render = await RenderUtility.render(TEMPLATE.BUTTON,
-    {
-        action: ROLL_TYPE.DAMAGE,
-        ...button
-    });
-
-    // dnd5e 6 has no `.card-buttons` block to prepend into; give the button its own row
-    // at the section insertion point.
-    const row = $('<div class="card-buttons rsr-card-buttons"></div>').append($(render));
-    _safeInsert(row, html);
-}
-
-async function _injectBreakConcentrationButton(message, html) {
-    const button = {
-        // dnd5e 6 renamed DND5E.ConcentrationBreak to DND5E.CONCENTRATION.Action.Break.
-        title: CoreUtility.localize(game.i18n.has("DND5E.ConcentrationBreak") ? "DND5E.ConcentrationBreak" : "DND5E.CONCENTRATION.Action.Break"),
-        icon: "<i class=\"fas fa-xmark\"></i>"
-    }
-
-    const render = await RenderUtility.render(TEMPLATE.BUTTON, 
-    { 
-        action: ROLL_TYPE.CONCENTRATION,
-        ...button
-    });
-
-    html.append($(render).addClass('rsr-concentration-buttons'));
-}
-
-/**
- * Whether the viewing user may change the damage type on this card. Mirrors the
- * gate the retroactive overlay controls use (_onOverlayHover).
- */
-function _canChangeDamageType(message) {
-    return game.user.isGM || message?.isAuthor === true;
-}
-
-/**
- * Whether a damage type is one the system currently registers.
- *
- * Reads the live registries rather than CONFIG.rsreforged.combinedDamageTypes, which is
- * a snapshot taken on the ready hook: a module that registers a custom damage type later
- * would otherwise be rejected here. Matches _getDamageTypeFromIcon below, and the
- * late-registration handling in _getDamageLabelToTypeMap.
- *
- * hasOwn, not `in` — the latter would accept inherited keys like "constructor".
- */
-function _isKnownDamageType(type) {
-    if (typeof type !== "string" || !type) return false;
-
-    return Object.hasOwn(CONFIG.DND5E?.damageTypes ?? {}, type)
-        || Object.hasOwn(CONFIG.DND5E?.healingTypes ?? {}, type);
-}
-
-/**
- * The damage types a roll can be switched between. dnd5e stores the full candidate
- * list on options.types alongside the auto-picked options.type (Activity#_processDamagePart).
- * Unknown types are dropped so cycling can never land on a type dnd5e cannot render.
- */
-function _getDamageTypeOptions(roll) {
-    const types = roll?.options?.types;
-    if (!Array.isArray(types)) return [];
-
-    return [...new Set(types.filter(_isKnownDamageType))];
-}
-
-/**
- * The damage rolls currently showing `type` that offer an alternative type.
- *
- * Matching on type rather than index is deliberate: with CONFIG.DND5E.aggregateDamageDisplay
- * on, dnd5e merges tooltip parts BY TYPE, so a part's index does not track a roll's index.
- *
- * Rolls sharing a type therefore cycle together. That is the only sensible reading when
- * they are aggregated into one part, and un-aggregated it still means what the click says:
- * change this damage type.
- */
-function _getCyclableDamageRolls(damageRolls, type) {
-    if (!type) return [];
-
-    return damageRolls.filter(roll => roll.options?.type === type && _getDamageTypeOptions(roll).length > 1);
-}
-
-/**
- * The damage type a rendered tooltip part is displaying, read from that part alone.
- *
- * Deliberately narrower than _getApplyDamageType: that helper falls back to the first
- * typed roll on the card when a part carries no type signal, which is right for applying
- * damage but wrong here — it would tag an untyped part as cyclable and cycle a different
- * part's roll. An unresolvable part simply gets no affordance.
- */
-function _getPartDamageType(total) {
-    return _getDamageTypeFromIcon(total.find('img').attr('src'))
-        ?? _getDamageTypeFromLabel(total.find('.label').text());
-}
-
-/**
- * Mark damage tooltip parts whose type can be changed, so the type label reads as
- * clickable (issue #27). Parts with a single candidate type get no affordance.
- *
- * dnd5e's tooltip markup carries no type or roll-index data attribute, so each part's
- * current type is resolved from its own rendered DOM.
- */
-function _injectDamageTypeToggles(message, html) {
-    // Cycling updates the message, and the re-render resets Foundry's dice-tooltip
-    // collapse state — snapping shut the very breakdown the type label lives in. Reopen
-    // it for the user who cycled; the marker is client-local, so nobody else's tooltip
-    // is forced open.
-    if (message._rsrExpandDamageTooltip) {
-        delete message._rsrExpandDamageTooltip;
-        html.find('.rsr-damage').closest('.dice-roll').addClass('expanded');
-    }
-
-    if (!_canChangeDamageType(message)) return;
-
-    const damageRolls = _getDamageRolls(message);
-    if (!damageRolls.length) return;
-
-    html.find('.rsr-damage .dice-tooltip .tooltip-part').each((_i, el) => {
-        const part = $(el);
-        const total = part.find('.total');
-        if (!total.length) return;
-
-        const type = _getPartDamageType(total);
-        if (!_getCyclableDamageRolls(damageRolls, type).length) return;
-
-        part.addClass('rsr-damage-type-toggle').attr('data-rsr-damage-type', type);
-        total.find('.label, img').attr('title', CoreUtility.localize(`${MODULE_SHORT}.chat.buttons.damageType`));
-    });
-}
-
-async function _injectApplyDamageButtons(message, html) {
-    const render = await RenderUtility.render(TEMPLATE.DAMAGE_BUTTONS, {});
-
-    const tooltip = html.find('.rsr-damage .dice-tooltip .tooltip-part');
-
-    if (tooltip.length > 1) {
-        tooltip.append($(render));
-    }
-
-    const total = html.find('.rsr-damage');
-    const renderXL = $(render);
-    renderXL.removeClass('rsr-damage-buttons');
-    renderXL.addClass('rsr-damage-buttons-xl');
-    renderXL.find('.rsr-indicator').remove();
-    total.append(renderXL);
-
-    if (!SettingsUtility.getSettingValue(SETTING_NAMES.ALWAYS_SHOW_BUTTONS)) {
-        tooltip.each((i, el) => {        
-            $(el).find('.rsr-damage-buttons').attr("style", "display: none;height: 0px");
-            $(el).hover(_onTooltipHover.bind(this, message, $(el)), _onTooltipHoverEnd.bind(this, $(el)));
-        })
-
-        _onDamageHoverEnd(total);
-        total.hover(_onDamageHover.bind(this, message, total), _onDamageHoverEnd.bind(this, total));
-    }
-
-    Hooks.callAll(`${MODULE_SHORT}.renderApplyDamageButtons`, message, html, total);
-}
-
-async function _injectOverlayButtons(message, html) {
-    await _injectOverlayRetroButtons(message, html);
-    await _injectOverlayHeaderButtons(message, html);   
-    
-    _onOverlayHoverEnd(html);
-    html.hover(_onOverlayHover.bind(this, message, html), _onOverlayHoverEnd.bind(this, html));
-}
-
-async function _injectOverlayRetroButtons(message, html) {
-    const overlayMultiRoll = await RenderUtility.render(TEMPLATE.OVERLAY_MULTIROLL, {});
-
-    html.find('.rsr-multiroll .dice-total').append($(overlayMultiRoll));
-
-    html.find(".rsr-overlay-multiroll div").click(async event => {
-        await _processRetroAdvButtonEvent(message, event);
-    });
-    
-    const overlayCrit = await RenderUtility.render(TEMPLATE.OVERLAY_CRIT, {});
-
-    html.find('.rsr-damage .dice-total').append($(overlayCrit));
-
-    html.find(".rsr-overlay-crit div").click(async event => {
-        await _processRetroCritButtonEvent(message, event);
-    });
-}
-
-async function _injectOverlayHeaderButtons(message, html) {
-
-}
-
-async function _processDamageButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    message.flags[MODULE_SHORT].manualDamage = false
-    message.flags[MODULE_SHORT].renderDamage = true;  
-
-    await ActivityUtility.runActivityAction(message, ROLL_TYPE.DAMAGE);
-}
-
-async function _processBreakConcentrationButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const actor = ChatUtility.getActorFromMessage(message);
-
-    if (actor) {
-        const ActiveEffect5e = CONFIG.ActiveEffect.documentClass;
-        ActiveEffect5e._manageConcentration(event, actor);
-    }
-}
-
-async function _processApplyButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
-    
-    const button = event.currentTarget;
-    const action = button.dataset.action;
-    const multiplier = Number(button.dataset.multiplier);
-    const dice = $(button).closest('.tooltip-part').find('.dice');
-
-    if (action !== "rsr-apply-damage" && action !== "rsr-apply-temp") return;
-
-    const targets = CoreUtility.getCurrentTargets();
-
-    if (targets.size === 0) return;
-
-    const damage = _getApplyDamage(message, dice, multiplier);
-
-    // These are invariant across targets — compute once instead of per-token. The
-    // multiplier MAGNITUDE is what applyDamage scales by; heal-vs-damage direction
-    // is carried by the damage type / the only:"healing" option, not the sign (the
-    // total-button path already passes the magnitude, so the two paths now match).
-    const applyAsTempHP = _shouldApplyAsTempHP(action, [damage]);
-    const tempHPValue = Math.floor(damage.value * Math.abs(multiplier));
-    const applyOptions = _getApplyDamageOptions(message, [damage], Math.abs(multiplier), multiplier < 0);
-
-    await Promise.all(Array.from(targets).map(async t => {
-        const target = t.actor;
-        return applyAsTempHP
-            ? await target.applyTempHP(tempHPValue)
-            : await target.applyDamage([ damage ], applyOptions);
-    }));
-
-    setTimeout(() => {
-        if (canvas.hud.token._displayState && canvas.hud.token._displayState !== 0) {
-            canvas.hud.token.render();
-        }
-    }, 50);
-}
-
-async function _processApplyTotalButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const button = event.currentTarget;
-    const action = button.dataset.action;
-    const multiplier = Number(button.dataset.multiplier);
-
-    if (action !== "rsr-apply-damage" && action !== "rsr-apply-temp") return;
-
-    const targets = CoreUtility.getCurrentTargets();
-
-    if (targets.size === 0) return;
-    
-    const damages = [];
-
-    // Deserialize the message rolls once for the whole loop instead of re-fetching
-    // (and re-deserializing) them inside _getApplyDamage for every damage die.
-    const damageRolls = _getDamageRolls(message);
-    const children = $(button).closest('.dice-roll').find('.rsr-damage .dice-tooltip .tooltip-part .dice');
-
-    children.each((i, el) => {
-        damages.push(_getApplyDamage(message, $(el), multiplier, damageRolls));
-    })
-
-    // Invariant across targets — compute once instead of per-token.
-    const applyAsTempHP = _shouldApplyAsTempHP(action, damages);
-    const tempHPValue = Math.floor(damages.reduce((accumulator, currentValue) => accumulator + currentValue.value, 0) * Math.abs(multiplier));
-    const applyOptions = _getApplyDamageOptions(message, damages, Math.abs(multiplier), multiplier < 0);
-
-    await Promise.all(Array.from(targets).map(async t => {
-        const target = t.actor;
-        return applyAsTempHP
-            ? await target.applyTempHP(tempHPValue)
-            : await target.applyDamage(damages, applyOptions);
-    }));
-
-    setTimeout(() => {
-        if (canvas.hud.token._displayState && canvas.hud.token._displayState !== 0) {
-            canvas.hud.token.render();
-        }
-    }, 50);
-}
-
-function _getApplyDamage(message, dice, multiplier, damageRolls = _getDamageRolls(message)) {
-    const total = dice.find('.total')
-    const parsed = parseInt(total.find('.value').text());
-    // A non-numeric/empty total would otherwise propagate NaN into applyDamage /
-    // applyTempHP and write NaN into the target's HP; fail safe to a 0 no-op.
-    const value = Number.isFinite(parsed) ? parsed : 0;
-    const type = _getApplyDamageType(damageRolls, total);
-
-    const properties = new Set(
-        (damageRolls.find(r => r.options?.type === type) ?? damageRolls[0])?.options?.properties ?? []
-    );
-    // A negative multiplier comes from the "apply as healing" button. Temp-HP and
-    // max-HP ("maximum") rolls carry their own application semantics (applyTempHP /
-    // dnd5e's only:"healing" path), so keep their type intact instead of collapsing
-    // it to 'healing' — otherwise the heart button would strip the type those paths
-    // key on (e.g. an Aid max-HP roll would be dealt as damage).
-    const resolvedType = (multiplier < 0 && type !== "temphp" && type !== "maximum") ? 'healing' : type;
-    return { value: value, type: resolvedType, properties: properties };
-}
-
-function _shouldApplyAsTempHP(action, damages) {
-    return action === "rsr-apply-temp" || (damages.length > 0 && damages.every(d => d.type === "temphp"));
-}
-
-function _getApplyDamageOptions(message, damages, multiplier, healingIntent = false) {
-    const options = { multiplier };
-
-    // dnd5e treats "maximum" as max-HP reduction unless the application is explicitly
-    // healing. Route it to max-HP restoration when the source is a healing activity
-    // (e.g. Aid) OR when the user clicked the heart/healing button — the heart is an
-    // explicit "apply as healing" signal, so it must restore max HP, not reduce it.
-    if (damages.some(d => d.type === "maximum") && (healingIntent || _isHealingApplyMessage(message))) {
-        options.only = "healing";
-    }
-
-    return options;
-}
-
-function _isHealingApplyMessage(message) {
-    return message.flags?.[MODULE_SHORT]?.isHealing === true
-        || ChatUtility.getActivityType(message) === "heal"
-        || message.type === "healing"
-        || message.flags?.dnd5e?.roll?.type === ROLL_TYPE.HEALING;
-}
-
-function _getApplyDamageType(damageRolls, total) {
-    const iconType = _getDamageTypeFromIcon(total.find('img').attr('src'));
-    if (iconType) return iconType;
-
-    const labelType = _getDamageTypeFromLabel(total.find('.label').text());
-    if (labelType) return labelType;
-
-    // No DOM signal matched a known type. Prefer an authoritative roll type (so
-    // applyDamage still honors resistances/immunities) over a raw label string,
-    // which on a multi-type roll would not match any CONFIG.DND5E damage key. When
-    // exactly one roll type exists this returns it; with several it picks the first,
-    // which the previous explicit single-type tier resolved to identically.
-    return damageRolls.find(r => r.options?.type)?.options?.type
-        ?? total.find('.label').text().trim().toLowerCase();
-}
-
-function _getDamageTypeFromIcon(src = "") {
-    const iconType = src.match(/\/damage\/([^/.]+)\./)?.[1];
-    if (!iconType) return null;
-    if (iconType === "maxhp") return "maximum";
-    if (CONFIG.DND5E.damageTypes?.[iconType] || CONFIG.DND5E.healingTypes?.[iconType]) return iconType;
-    return null;
-}
-
-let _damageLabelToTypeCache = null;
-
-/**
- * Lazily-built, cached reverse map of normalized damage/healing labels (plus the
- * type keys and short labels) to their dnd5e type key. Rebuilding the merged map
- * on every apply click was wasted work, but the cache is rebuilt if the registered
- * type set changes size (e.g. a module adds damage/healing types after first use)
- * so it cannot go stale against late registrations.
- */
-function _getDamageLabelToTypeMap() {
-    const entries = {
-        ...(CONFIG.DND5E.damageTypes ?? {}),
-        ...(CONFIG.DND5E.healingTypes ?? {})
-    };
-    const typeCount = Object.keys(entries).length;
-    if (_damageLabelToTypeCache?.typeCount === typeCount) return _damageLabelToTypeCache.map;
-
-    const map = new Map();
-    for (const [type, config] of Object.entries(entries)) {
-        for (const value of [type, config?.label, config?.labelShort]) {
-            if (value) map.set(String(value).trim().toLowerCase(), type);
-        }
-    }
-    _damageLabelToTypeCache = { typeCount, map };
-    return map;
-}
-
-function _getDamageTypeFromLabel(label = "") {
-    const normalized = label.trim().toLowerCase();
-    if (!normalized) return null;
-    return _getDamageLabelToTypeMap().get(normalized) ?? null;
+/* -------------------------------------------- */
+/*  Usage card rendering (dnd5e 6 compact)      */
+/* -------------------------------------------- */
+
+function _isD20Roll(roll) {
+    return !!roll && (roll instanceof CONFIG.Dice.D20Roll || roll.class === "D20Roll" || roll.constructor?.name === "D20Roll");
 }
 
 function _isDamageRoll(roll) {
-    return roll instanceof CONFIG.Dice.DamageRoll
+    return !!roll && (roll instanceof CONFIG.Dice.DamageRoll
         || roll.class === "DamageRoll"
-        || roll.constructor?.name === "DamageRoll";
+        || roll.constructor?.name === "DamageRoll");
 }
 
 function _getDamageRolls(message) {
     return ChatUtility.getMessageRolls(message).filter(_isDamageRoll);
 }
 
+function _render(template, context) {
+    return foundry.applications.handlebars.renderTemplate(template, context);
+}
+
 /**
- * Cycle a damage part to its next candidate type (issue #27).
- *
- * Nothing is re-rolled — only the type flavour changes, so the total is untouched.
- * dnd5e regenerates the icon and label from options.type on re-render, and the apply
- * buttons read the type back out of that DOM, so resistances/immunities follow.
+ * Parse an HTML string into its top-level element nodes.
+ * @param {string} html
+ * @returns {HTMLElement[]}
  */
-async function _processDamageTypeCycleEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
+function _parse(html) {
+    // A plain element of the live document (not a <template>): the custom elements inside
+    // (<damage-application>, <target-pill>) then upgrade normally once connected.
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    return Array.from(wrapper.children);
+}
 
-    // Re-check rather than trusting the injected DOM.
+/**
+ * Elements of a container that belong to it rather than to a summarized child message.
+ */
+function _own(container, selector) {
+    return Array.from(container.querySelectorAll(selector)).filter(el => !el.closest(".card-summary"));
+}
+
+/**
+ * dnd5e's _enrichChatCard moves the `dnd5e2` class from inner elements onto the message;
+ * do the same for content RSR inserts afterwards.
+ */
+function _stripLegacyClass(nodes) {
+    for (const node of nodes) {
+        node.classList?.remove("dnd5e2");
+        node.querySelectorAll?.(".dnd5e2").forEach(el => el.classList.remove("dnd5e2"));
+    }
+}
+
+/**
+ * Render an RSR usage card in dnd5e 6's compact style: the attack (targets row + roll
+ * button), damage (roll button + native <damage-application> tray) and formula rows are built
+ * from the system's own attack-card / damage-card / card-rolls templates and inserted after
+ * the card face, before the summaries of descendant messages (saves etc.).
+ * @param {ChatMessage5e} message
+ * @param {HTMLElement} element
+ */
+async function _renderUsageCard(message, element) {
+    const content = element.querySelector(".message-content");
+    if (!content) return;
+
+    // Integration surface — fires before RSR changes the dnd5e-rendered card.
+    Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, content, ROLL_TYPE.ACTIVITY);
+
+    const flags = message.flags[MODULE_SHORT];
+    const rolls = ChatUtility.getMessageRolls(message);
+    const attackIndex = rolls.findIndex(_isD20Roll);
+    const damageRolls = rolls.filter(_isDamageRoll);
+    // Only utility formulas RSR rolled: a usage card's own native rolls (consumption) are
+    // plain BasicRolls too.
+    const formulaIndex = flags.renderFormula
+        ? rolls.findIndex(r => RollUtility.isRollOfType(r, CONFIG.Dice.BasicRoll)) : -1;
+
+    // dnd5e 6 MessageRegistry entries are rebuilt from `_source.system.origin` on load, which
+    // a usage card never has; re-track processed attack cards (see _registerCardAsAttack).
+    if (flags.renderAttack && attackIndex >= 0) ActivityUtility.trackCardAsAttack(message);
+
+    const card = _own(content, ".chat-card")[0] ?? null;
+
+    // Native buttons for rolls already on the card go; the others (manual damage, a
+    // cancelled configure dialog) stay and roll onto this card when clicked.
+    const removeActions = [];
+    if (attackIndex >= 0) removeActions.push("rollAttack");
+    if (damageRolls.length) removeActions.push("rollDamage", "rollHealing");
+    if (formulaIndex >= 0) removeActions.push("rollFormula");
+    if (card) _removeCardButtons(card, removeActions);
+    // Legacy custom-content cards may carry stray classic roll markup.
+    if (rolls.length) _own(content, "div.dice-roll").forEach(el => el.remove());
+
+    const sections = [];
+    const supplements = [];
+
+    if (attackIndex >= 0) {
+        const attack = await _renderAttackSection(message, rolls[attackIndex], attackIndex);
+        sections.push(...attack.nodes);
+        supplements.push(...attack.supplements);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.ATTACK, attack.nodes);
+    }
+
+    if (damageRolls.length) {
+        const damage = await _renderDamageSection(message, damageRolls);
+        sections.push(...damage.nodes);
+        supplements.push(...damage.supplements);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.DAMAGE, damage.nodes);
+    }
+
+    if (formulaIndex >= 0) {
+        const formula = await _renderFormulaSection(message, rolls[formulaIndex], formulaIndex);
+        sections.push(...formula.nodes);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.FORMULA, formula.nodes);
+    }
+
+    _stripLegacyClass(sections);
+    _stripLegacyClass(supplements);
+
+    if (card) {
+        _insertSupplements(card, supplements);
+        card.after(...sections);
+    } else {
+        const firstSummary = content.querySelector(".card-summary, effect-application");
+        if (firstSummary) firstSummary.before(...supplements, ...sections);
+        else content.append(...supplements, ...sections);
+    }
+
+    // Trays follow dnd5e's autoCollapseChatTrays policy and remembered states.
+    if (typeof message._collapseTrays === "function") message._collapseTrays(element);
+
+    _bindNativeRollButtons(message, element);
+    _injectDamageTypeToggles(message, content);
+}
+
+/**
+ * Insert supplement paragraphs into the card face after dnd5e's own supplements.
+ */
+function _insertSupplements(card, supplements) {
+    if (!supplements.length) return;
+    const existing = Array.from(card.querySelectorAll(":scope > p.supplement"));
+    if (existing.length) {
+        existing.at(-1).after(...supplements);
+        return;
+    }
+    const firstRow = card.querySelector(":scope > section.icon-row, :scope > recorded-targets");
+    if (firstRow) firstRow.before(...supplements);
+    else card.append(...supplements);
+}
+
+/**
+ * Remove the dnd5e usage-card buttons whose rolls RSR already put on the card.
+ * dnd5e 6 renders them in card-buttons.hbs as `section.icon-row > ul > li > button[data-action]`.
+ * @param {HTMLElement} card The card's `.chat-card`.
+ * @param {string[]} actions
+ */
+function _removeCardButtons(card, actions) {
+    for (const action of actions) {
+        for (const el of card.querySelectorAll(`[data-action="${action}"], [data-forward-action="${action}"]`)) {
+            if (el.closest(".card-summary")) continue;
+            const li = el.closest("li");
+            if (li && card.contains(li) && li.querySelectorAll("button").length <= 1) li.remove();
+            else el.remove();
+        }
+    }
+    for (const row of card.querySelectorAll("section.icon-row")) {
+        if (row.querySelector("ul") && !row.querySelector("li")) row.remove();
+    }
+    // Legacy `.card-buttons` block.
+    for (const block of card.querySelectorAll(".card-buttons")) {
+        if (!block.querySelector("button")) block.remove();
+    }
+}
+
+/**
+ * The attack as dnd5e's attack-card.hbs renders it (targets row + compact roll button).
+ * @returns {Promise<{nodes: HTMLElement[], supplements: HTMLElement[]}>}
+ */
+async function _renderAttackSection(message, roll, index) {
+    const flags = message.flags[MODULE_SHORT];
+    const actor = ChatUtility.getActorFromMessage(message);
+    const hidden = SettingsUtility.shouldHideNpcRollForActor(actor, ROLL_TYPE.ATTACK);
+    const visibility = game.settings.get("dnd5e", "attackRollVisibility");
+    const displayResult = !hidden && (game.user.isGM || (visibility !== "none"));
+
+    RollUtility.resetRollGetters(roll);
+    const rollHtml = await roll.render({
+        template: TEMPLATES.ROLL_COMPACT,
+        canCrit: true,
+        displayResult,
+        forceSuccess: false,
+        isPrivate: !message.isContentVisible,
+        message
+    });
+
+    const targets = _prepareTargetsContext(message, roll, hidden);
+    const nodes = _parse(await _render(TEMPLATES.ATTACK_CARD, { rolls: [rollHtml], targets }));
+    for (const node of nodes) node.classList.add("rsr-attack");
+    for (const button of nodes.flatMap(n => Array.from(n.querySelectorAll("button.dice-roll")))) {
+        button.dataset.rsrRollIndex = String(index);
+        button.dataset.rsrRollType = ROLL_TYPE.ATTACK;
+    }
+
+    const supplements = [];
+    const mastery = _createMasterySupplement(message, roll);
+    if (mastery) supplements.push(mastery);
+
+    // The stored fallback covers quantity-one autoDestroy ammunition, deleted before render.
+    const ammunitionId = flags.ammunition;
+    const liveAmmunition = actor?.items?.get(ammunitionId);
+    const storedAmmunition = flags.ammunitionData ?? message.flags?.dnd5e?.roll?.ammunitionData;
+    const storedAmmunitionId = storedAmmunition?._id ?? storedAmmunition?.id;
+    const ammo = liveAmmunition?.name
+        ?? (storedAmmunition && storedAmmunitionId === ammunitionId ? storedAmmunition.name : undefined);
+    if (ammo) supplements.push(_supplement(CoreUtility.localize("DND5E.CONSUMABLE.Type.Ammunition.Label"), ammo));
+
+    return { nodes, supplements };
+}
+
+/**
+ * Target descriptors evaluated against the attack, like AttackMessageData#_prepareTargetsContext.
+ */
+function _prepareTargetsContext(message, roll, hidden) {
+    const targets = ActivityUtility.getCardTargets(message);
+    if (!Array.isArray(targets) || !targets.length || !message.isContentVisible) return [];
+    const visibility = game.settings.get("dnd5e", "attackRollVisibility");
+    const showAC = !hidden && (game.user.isGM || (visibility === "all"));
+    const showResult = !hidden && (game.user.isGM || (visibility !== "none"));
+    const isCritical = roll.isCritical === true;
+    const isFumble = roll.isFumble === true;
+    return targets
+        .map(target => {
+            const ac = Number.isFinite(target.ac) ? target.ac : null;
+            const isMiss = (ac === null) || (!isCritical && ((roll.total < ac) || isFumble));
+            return { ...target, ac, isMiss, showAC, showResult, hasAC: ac !== null };
+        })
+        .sort((lhs, rhs) => (lhs.isMiss === rhs.isMiss) ? 0 : (lhs.isMiss ? 1 : -1));
+}
+
+/**
+ * The damage as dnd5e's damage-card.hbs renders it (compact total button + per-type
+ * breakdown popover + native <damage-application> tray), for all damage rolls of the card.
+ * @returns {Promise<{nodes: HTMLElement[], supplements: HTMLElement[]}>}
+ */
+async function _renderDamageSection(message, damageRolls) {
+    const flags = message.flags[MODULE_SHORT];
+    const aggregate = CONFIG.DND5E.aggregateDamageDisplay;
+    const aggregateDamageRolls = globalThis.dnd5e?.dice?.aggregateDamageRolls;
+    let display = damageRolls;
+    if (aggregate && typeof aggregateDamageRolls === "function") {
+        try { display = aggregateDamageRolls(damageRolls); } catch (err) { display = damageRolls; }
+    }
+
+    const parts = display.map(roll => {
+        const part = typeof roll.aggregateTerms === "function"
+            ? roll.aggregateTerms()
+            : { type: roll.options?.type, total: Math.max(0, roll.total), constant: 0, dice: [], icon: null, method: null };
+        part.config = CONFIG.DND5E.damageTypes[part.type] ?? CONFIG.DND5E.healingTypes[part.type] ?? null;
+        part.label = part.config?.labelShort ?? part.config?.label ?? "";
+        return part;
+    });
+    const total = display.reduce((sum, roll) => sum + Math.max(0, roll.total), 0);
+
+    const isCritical = damageRolls.some(r => r.options?.isCritical) || (flags.isCritical && !flags.isHealing);
+    const entries = [];
+    if (isCritical) entries.push({ css: "critical", label: CoreUtility.localize("DND5E.Critical") });
+    if (flags.versatile) entries.push({ label: CoreUtility.localize("DND5E.Versatile") });
+
+    const activity = ActivityUtility._getActivityFromMessage(message);
+    const onSaveKey = activity?.type === "save" && activity.damage?.onSave
+        ? `DND5E.SAVE.FIELDS.damage.onSave.${activity.damage.onSave.capitalize()}` : null;
+
+    const context = {
+        isPrivate: !message.isContentVisible,
+        parts,
+        total,
+        rows: {
+            properties: { entries, icon: "fa-solid fa-tag", label: "DND5E.CHATMESSAGE.Row.Properties" }
+        },
+        showTray: (game.user.isGM || !!globalThis.dnd5e?.settings?.allowPlayerDamageTray) && message.isContentVisible,
+        onSave: onSaveKey && game.i18n.has(onSaveKey) ? CoreUtility.localize(onSaveKey) : null
+    };
+
+    const rendered = _parse(await _render(TEMPLATES.DAMAGE_CARD, context));
+    const nodes = [];
+    const supplements = [];
+    for (const node of rendered) {
+        if (node.matches(".chat-card")) {
+            // Header (none here), supplements and the properties row of the damage card.
+            for (const child of Array.from(node.children)) {
+                if (child.matches("p.supplement")) supplements.push(child);
+                else if (child.matches("section.icon-row")) nodes.push(child);
+            }
+            continue;
+        }
+        nodes.push(node);
+    }
+
+    for (const node of nodes) node.classList.add("rsr-damage");
+    const button = nodes.map(n => n.querySelector?.("button.dice-roll")).find(b => b);
+    if (button) {
+        button.dataset.rsrRollKind = "damage";
+        button.dataset.rsrRollType = flags.isHealing ? ROLL_TYPE.HEALING : ROLL_TYPE.DAMAGE;
+        // Tell damage and healing apart from the attack row on the combined card.
+        const icon = button.closest("section.icon-row")?.querySelector(":scope > i");
+        if (icon) {
+            icon.classList.remove("fa-dice");
+            icon.classList.add(flags.isHealing ? "fa-heart" : "fa-burst");
+        }
+    }
+
+    return { nodes, supplements };
+}
+
+/**
+ * The utility formula as a compact roll row with its label.
+ * @returns {Promise<{nodes: HTMLElement[]}>}
+ */
+async function _renderFormulaSection(message, roll, index) {
+    const flags = message.flags[MODULE_SHORT];
+    const rollHtml = await roll.render({
+        template: TEMPLATES.ROLL_COMPACT,
+        isPrivate: !message.isContentVisible,
+        message
+    });
+    const label = flags.formulaName ?? CoreUtility.localize("DND5E.OtherFormula");
+    const rows = await _render(TEMPLATES.CARD_ROWS, {
+        rows: { formula: { entries: [{ label }], icon: "fa-solid fa-calculator", label: "DND5E.OtherFormula" } }
+    });
+    const nodes = [..._parse(rows), ..._parse(await _render(TEMPLATES.CARD_ROLLS, { rolls: [rollHtml] }))];
+    for (const node of nodes) node.classList.add("rsr-formula");
+    for (const button of nodes.flatMap(n => Array.from(n.querySelectorAll("button.dice-roll")))) {
+        button.dataset.rsrRollIndex = String(index);
+        button.dataset.rsrRollType = ROLL_TYPE.FORMULA;
+    }
+    return { nodes };
+}
+
+function _supplement(label, detail) {
+    const p = document.createElement("p");
+    p.classList.add("supplement", "rsr-supplement");
+    const strong = document.createElement("strong");
+    strong.textContent = label;
+    p.append(strong, document.createTextNode(` ${detail}`));
+    return p;
+}
+
+function _getRollMastery(message, roll) {
+    const activity = ActivityUtility._getActivityFromMessage(message);
+    const mastery = message.flags?.[MODULE_SHORT]?.mastery
+        ?? roll?.options?.mastery
+        ?? message.flags?.dnd5e?.roll?.mastery
+        ?? activity?.item?.system?.mastery;
+    return typeof mastery === "string" ? mastery.toLowerCase() : "";
+}
+
+/**
+ * The weapon mastery supplement, as attack-card.hbs renders it.
+ */
+function _createMasterySupplement(message, roll) {
+    const mastery = _getRollMastery(message, roll);
+    const config = CONFIG.DND5E?.weaponMasteries?.[mastery];
+    if (!config) return null;
+    const label = config.label ? CoreUtility.localize(config.label) : `${mastery[0].toUpperCase()}${mastery.slice(1)}`;
+    const reference = config.reference ?? config.uuid ?? "";
+
+    const p = document.createElement("p");
+    p.classList.add("supplement", "rsr-supplement");
+    p.dataset.rsrGeneratedMastery = mastery;
+    const strong = document.createElement("strong");
+    const flavorKey = "DND5E.WEAPON.Mastery.Flavor";
+    strong.textContent = game.i18n.has(flavorKey) ? CoreUtility.localize(flavorKey) : "Mastery:";
+    p.append(strong, document.createTextNode(" "));
+    if (reference) {
+        const link = document.createElement("a");
+        link.classList.add("content-link");
+        Object.assign(link.dataset, { link: "", uuid: reference, tooltip: label });
+        link.draggable = true;
+        link.textContent = label;
+        p.append(link);
+    } else {
+        p.append(document.createTextNode(label));
+    }
+    return p;
+}
+
+/**
+ * Route the native Attack / Damage / Healing / Other Formula buttons of an RSR card to RSR,
+ * so their rolls land on this card. Capture phase on the message element runs before dnd5e's
+ * own (bubbling) click handler on the same element.
+ */
+function _bindNativeRollButtons(message, element) {
+    element.addEventListener("click", event => {
+        const button = event.target?.closest?.("button[data-action]");
+        if (!button || button.closest(".card-summary") || !element.contains(button)) return;
+        const action = NATIVE_ROLL_ACTIONS[button.dataset.action];
+        if (!action) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        const keys = RollUtility.readRollKeys(event);
+        button.disabled = true;
+        ActivityUtility.runActivityAction(message, action, {
+            configure: keys.normal,
+            advantage: keys.advantage || undefined,
+            disadvantage: keys.disadvantage || undefined
+        }).catch(err => {
+            LogUtility.logError(`Failed to roll ${action}: ${err?.message ?? err}`);
+            console.error(err);
+        }).finally(() => { button.disabled = false; });
+    }, { capture: true });
+}
+
+/* -------------------------------------------- */
+/*  Roll decoration (all compact messages)      */
+/* -------------------------------------------- */
+
+/**
+ * Decorate the compact roll buttons of a message and of the child messages it summarizes.
+ */
+function _decorateMessage(message, element) {
+    const content = element.querySelector(".message-content");
+    if (!content) return;
+
+    if (ChatUtility.isRsrUsageCard(message) || DECORATED_TYPES.has(message.type)) {
+        _decorateRollButtons(message, content, { summary: false });
+    }
+
+    if (message.type === "attack") _hideNativeTargetResults(message, content);
+
+    for (const summary of content.querySelectorAll(".card-summary[data-message-id]")) {
+        const child = game.messages.get(summary.dataset.messageId);
+        if (child && DECORATED_TYPES.has(child.type)) _decorateRollButtons(child, summary, { summary: true });
+    }
+}
+
+/**
+ * The RSR roll type of a message's d20 rolls (for hidden NPC results and bonus filtering).
+ */
+function _rollTypeForMessage(message) {
+    if (message.type === "check" && message.system?.type === "initiative") return "initiative";
+    if (message.type === "generic") return ROLL_TYPE.FORMULA;
+    return ChatUtility.getMessageType(message);
+}
+
+function _bonusTypeFor(rollType) {
+    switch (rollType) {
+        case ROLL_TYPE.ABILITY_TEST: return "check";
+        case ROLL_TYPE.HEALING: return "damage";
+        default: return rollType ?? "any";
+    }
+}
+
+/**
+ * @param {ChatMessage} message The message owning the rolls in `container`.
+ * @param {HTMLElement} container The message content, or a `.card-summary` of a parent card.
+ * @param {object} options
+ * @param {boolean} options.summary Whether `container` is a summary inside another card.
+ */
+function _decorateRollButtons(message, container, { summary }) {
+    const buttons = Array.from(container.querySelectorAll("button.dice-roll"))
+        .filter(b => summary || !b.closest(".card-summary"));
+    if (!buttons.length) return;
+
+    const rolls = ChatUtility.getMessageRolls(message);
+    const isDamageMessage = message.type === "damage" || message.type === "healing";
+    const reopen = message._rsrReopen;
+
+    buttons.forEach((button, i) => {
+        let popover = button.nextElementSibling?.matches?.(".roll-breakdown") ? button.nextElementSibling : null;
+        const kind = (button.dataset.rsrRollKind === "damage" || isDamageMessage) ? "damage" : "roll";
+        const index = kind === "roll"
+            ? (button.dataset.rsrRollIndex !== undefined ? Number(button.dataset.rsrRollIndex) : i)
+            : null;
+        const roll = kind === "roll" ? rolls[index] : null;
+        const rollType = button.dataset.rsrRollType
+            ?? (kind === "damage" ? ROLL_TYPE.DAMAGE : _rollTypeForMessage(message));
+
+        if (_isD20Roll(roll)) {
+            _decorateD20Button(button, roll);
+            if (_applyHiddenNpcPresentation(message, button, popover, rollType) === "removed") popover = null;
+        }
+
+        if (popover) {
+            if (!button.popoverTargetElement) button.popoverTargetElement = popover;
+            if (!popover.dataset.rsrMessageId) {
+                popover.dataset.rsrMessageId = message.id;
+                _stampDiePaths(popover, message, kind, index, rolls);
+                _addRollActions(message, button, popover, { kind, index, roll, rollType });
+            }
+        }
+
+        // Re-open the breakdown the user was working in after the update re-rendered the card.
+        if (reopen && popover && reopen.kind === kind && reopen.index === index && !summary === !reopen.summary) {
+            delete message._rsrReopen;
+            setTimeout(() => {
+                if (button.isConnected && !popover.matches(":popover-open")) button.click();
+            }, 100);
+        }
+    });
+}
+
+/**
+ * Multiroll display: next to the kept die dnd5e shows on the button, show the other d20s
+ * that were rolled, dimmed.
+ */
+function _decorateD20Button(button, roll) {
+    const die = button.querySelector(".d20die");
+    if (!die || button.classList.contains("rsr-multiroll")) return;
+    if (!SettingsUtility.getSettingValue(SETTING_NAMES.D20_ICONS_ENABLED)) {
+        die.remove();
+        return;
+    }
+    const d20 = RollUtility.getD20Term(roll);
+    const candidates = RollUtility.getD20Candidates(d20);
+    if (candidates.length < 2) return;
+    button.classList.add("rsr-multiroll");
+    const ignored = candidates.filter(r => !r.active);
+    ignored.forEach((result, n) => {
+        const alt = document.createElement("span");
+        alt.classList.add("d20die", "rsr-d20die-alt", "discarded");
+        alt.style.setProperty("--rsr-alt-index", String(n + 1));
+        alt.dataset.tooltip = CoreUtility.localize(`${MODULE_SHORT}.chat.ignoredDie`);
+        alt.innerHTML = '<i class="fa-fw fa-solid fa-hexagon fa-rotate-90" inert></i><span class="roll"></span>';
+        alt.querySelector(".roll").textContent = String(result.result);
+        die.after(alt);
+    });
+}
+
+/**
+ * RSR's "hide NPC roll results" in the compact style.
+ *  - "total": the total reads "???", the natural d20(s) stay visible, modifiers are removed
+ *    from the breakdown;
+ *  - "breakdown": the total stays, the natural d20 and the whole breakdown are hidden.
+ * Success/failure markers never show for hidden rolls.
+ */
+function _applyHiddenNpcPresentation(message, button, popover, rollType) {
+    const actor = ChatUtility.getActorFromMessage(message);
+    if (!SettingsUtility.shouldHideNpcRollForActor(actor, rollType)) return;
+
+    const breakdown = SettingsUtility.getHideNpcRollStyle() === HIDE_NPC_ROLL_STYLES.BREAKDOWN;
+    button.classList.remove("success", "failure");
+    button.querySelector(".icons")?.replaceChildren();
+    button.classList.add("rsr-hidden-result");
+
+    if (breakdown) {
+        button.classList.remove("critical", "fumble");
+        button.querySelectorAll(".d20die").forEach(el => el.remove());
+        popover?.remove();
+        return "removed";
+    }
+
+    const total = button.querySelector(".result .total");
+    if (total) total.textContent = CoreUtility.localize(`${MODULE_SHORT}.chat.hide`);
+    if (popover) {
+        for (const part of popover.querySelectorAll(".tooltip-part")) {
+            if (!part.querySelector(".roll.d20")) part.remove();
+        }
+    }
+    return "masked";
+}
+
+/**
+ * Hide hit/miss and AC on native attack messages of hidden NPC rolls.
+ */
+function _hideNativeTargetResults(message, content) {
+    const actor = ChatUtility.getActorFromMessage(message);
+    if (!SettingsUtility.shouldHideNpcRollForActor(actor, ROLL_TYPE.ATTACK)) return;
+    for (const pill of content.querySelectorAll("target-pill")) {
+        pill.removeAttribute("data-hit");
+        pill.removeAttribute("data-miss");
+        pill.removeAttribute("data-value");
+    }
+}
+
+/**
+ * Stamp each die of a breakdown with its path (roll index : index in roll.dice : result
+ * index) so clicking it rerolls / fudges exactly that die (RerollManager).
+ *
+ * d20/basic rolls: roll-breakdown.hbs renders one `.tooltip-part` per `roll.dice` entry and
+ * one `li.roll` per result. Damage: damage-breakdown.hbs renders one part per damage roll
+ * (unless aggregated) with the dice of its top-level terms in reverse term order
+ * (aggregateDamageTerms). Anything that does not line up is left unstamped (not rerollable).
+ */
+function _stampDiePaths(popover, message, kind, index, rolls) {
+    const parts = Array.from(popover.querySelectorAll(".tooltip-part:not(.constant-term)"));
+    if (kind === "roll") {
+        const roll = rolls[index];
+        if (!roll?.dice || parts.length !== roll.dice.length) return;
+        parts.forEach((part, dieIndex) => {
+            const items = part.querySelectorAll("li.roll");
+            const results = roll.dice[dieIndex]?.results ?? [];
+            if (items.length !== results.length) return;
+            items.forEach((li, resultIndex) => { li.dataset.rsrPath = `${index}:${dieIndex}:${resultIndex}`; });
+        });
+        return;
+    }
+
+    if (CONFIG.DND5E.aggregateDamageDisplay) return;
+    const damage = rolls.map((roll, i) => ({ roll, i })).filter(({ roll }) => _isDamageRoll(roll));
+    if (parts.length !== damage.length) return;
+    parts.forEach((part, p) => {
+        const { roll, i } = damage[p];
+        const paths = _damagePartDicePaths(roll);
+        const items = part.querySelectorAll("li.roll");
+        if (items.length !== paths.length) return;
+        items.forEach((li, n) => {
+            const path = paths[n];
+            if (path) li.dataset.rsrPath = `${i}:${path.dieIndex}:${path.resultIndex}`;
+        });
+    });
+}
+
+/**
+ * Mirror aggregateDamageTerms' dice order: top-level terms from last to first; dice nested in
+ * pool terms are listed but not addressable (null).
+ */
+function _damagePartDicePaths(roll) {
+    const { DiceTerm, PoolTerm } = foundry.dice.terms;
+    const paths = [];
+    const countPool = term => (term.rolls ?? []).reduce((n, r) => n + (r.dice ?? []).reduce((m, d) => m + (d.results?.length ?? 0), 0), 0);
+    const dice = roll.dice ?? [];
+    for (let i = roll.terms.length - 1; i >= 0; i--) {
+        const term = roll.terms[i];
+        if (term instanceof DiceTerm) {
+            const dieIndex = dice.indexOf(term);
+            (term.results ?? []).forEach((_, resultIndex) => paths.push(dieIndex >= 0 ? { dieIndex, resultIndex } : null));
+        } else if (term instanceof PoolTerm) {
+            for (let n = countPool(term); n > 0; n--) paths.push(null);
+        }
+    }
+    return paths;
+}
+
+/**
+ * The small button row in a roll's breakdown popover: "+ Bonus" on every roll,
+ * Disadvantage / Normal / Advantage on d20 rolls, Critical on RSR card damage.
+ */
+function _addRollActions(message, button, popover, { kind, index, roll, rollType }) {
+    if (!ChatUtility.canModify(message) || !message.isContentVisible) return;
+    if (popover.querySelector(".rsr-roll-actions")) return;
+
+    const overlays = SettingsUtility.getSettingValue(SETTING_NAMES.OVERLAY_BUTTONS_ENABLED);
+    const bar = document.createElement("div");
+    bar.classList.add("rsr-roll-actions");
+
+    const add = (action, icon, labelKey, { text, dataset = {}, pressed } = {}) => {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.classList.add("rsr-roll-action");
+        el.dataset.rsrAction = action;
+        Object.assign(el.dataset, dataset);
+        const label = CoreUtility.localize(labelKey);
+        el.dataset.tooltip = label;
+        el.setAttribute("aria-label", label);
+        if (pressed !== undefined) el.setAttribute("aria-pressed", String(pressed));
+        el.innerHTML = `<i class="${icon}" inert></i>`;
+        if (text) {
+            const span = document.createElement("span");
+            span.textContent = text;
+            el.append(span);
+        }
+        bar.append(el);
+        return el;
+    };
+
+    add("bonus", "fa-solid fa-plus", `${MODULE_SHORT}.chat.buttons.bonus`, {
+        text: CoreUtility.localize(`${MODULE_SHORT}.chat.buttons.bonusShort`)
+    });
+
+    if (overlays && _isD20Roll(roll) && RollUtility.getD20Term(roll)) {
+        const mode = RollUtility.getD20Mode(roll);
+        add("mode", "fa-solid fa-chevrons-down", `${MODULE_SHORT}.chat.buttons.rollDisadvantage`,
+            { dataset: { mode: "dis" }, pressed: mode === "dis" });
+        add("mode", "fa-solid fa-equals", `${MODULE_SHORT}.chat.buttons.rollNormal`,
+            { dataset: { mode: "normal" }, pressed: mode === "normal" });
+        add("mode", "fa-solid fa-chevrons-up", `${MODULE_SHORT}.chat.buttons.rollAdvantage`,
+            { dataset: { mode: "adv" }, pressed: mode === "adv" });
+    }
+
+    if (overlays && kind === "damage" && ChatUtility.isRsrUsageCard(message)
+        && !ChatUtility.isMessageCritical(message) && !message.flags[MODULE_SHORT].isHealing) {
+        add("crit", "fa-solid fa-burst", `${MODULE_SHORT}.chat.buttons.rollCrit`, {
+            text: CoreUtility.localize("DND5E.Critical")
+        });
+    }
+
+    // Plain buttons without `data-action`: dnd5e routes every [data-action] click inside a
+    // system-typed card to the card's data model / activity.
+    bar.addEventListener("click", event => {
+        const target = event.target.closest("[data-rsr-action]");
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        _onRollAction(message, target, { kind, index, rollType, summary: !!popover.closest(".card-summary") });
+    });
+    // Keep a pointerdown inside the popover from reaching light-dismiss / canvas handlers.
+    bar.addEventListener("pointerdown", event => event.stopPropagation());
+
+    popover.append(bar);
+}
+
+async function _onRollAction(message, target, { kind, index, rollType, summary }) {
+    message._rsrReopenCandidate = { kind, index, summary, at: Date.now() };
+    try {
+        switch (target.dataset.rsrAction) {
+            case "bonus":
+                await BonusManager.openBonusDialog(message, kind === "damage" ? "damage" : _bonusTypeFor(rollType), {
+                    rollIndex: kind === "roll" ? index : undefined
+                });
+                break;
+            case "mode":
+                await ChatUtility.retroD20Mode(message, index, target.dataset.mode);
+                break;
+            case "crit":
+                await _processRetroCrit(message);
+                break;
+        }
+    } catch (err) {
+        LogUtility.logError(`RSReforged action failed: ${err?.message ?? err}`);
+        console.error(err);
+    }
+}
+
+function _modeLabelKey(mode) {
+    if (mode === "adv") return "DND5E.Advantage";
+    if (mode === "dis") return "DND5E.Disadvantage";
+    return "DND5E.Normal";
+}
+
+/**
+ * Rewrite the " (Advantage)" / " (Disadvantage)" suffix dnd5e appends to a roll's flavor
+ * (D20Roll._prepareMessageData).
+ */
+function _flavorForMode(flavor, mode) {
+    const adv = ` (${CoreUtility.localize("DND5E.Advantage")})`;
+    const dis = ` (${CoreUtility.localize("DND5E.Disadvantage")})`;
+    let base = flavor ?? "";
+    for (const suffix of [adv, dis]) {
+        if (base.endsWith(suffix)) base = base.slice(0, -suffix.length);
+    }
+    if (mode === "adv") return base + adv;
+    if (mode === "dis") return base + dis;
+    return base;
+}
+
+async function _provideRollFeedback(rolls, message) {
+    if (!rolls.length) return;
+    if (!game.dice3d || !game.dice3d.isEnabled()) {
+        CoreUtility.playRollSound();
+        return;
+    }
+    if (!CoreUtility.dice3dAnimatesRollUpdates()) await CoreUtility.tryRollDice3D(rolls, message.id);
+}
+
+/* -------------------------------------------- */
+/*  Damage types (issue #27)                    */
+/* -------------------------------------------- */
+
+function _canChangeDamageType(message) {
+    return game.user.isGM || message?.isAuthor === true;
+}
+
+function _isKnownDamageType(type) {
+    if (typeof type !== "string" || !type) return false;
+    return Object.hasOwn(CONFIG.DND5E?.damageTypes ?? {}, type)
+        || Object.hasOwn(CONFIG.DND5E?.healingTypes ?? {}, type);
+}
+
+function _getDamageTypeOptions(roll) {
+    const types = roll?.options?.types;
+    if (!Array.isArray(types)) return [];
+    return [...new Set(types.filter(_isKnownDamageType))];
+}
+
+function _getCyclableDamageRolls(damageRolls, type) {
+    if (!type) return [];
+    return damageRolls.filter(roll => roll.options?.type === type && _getDamageTypeOptions(roll).length > 1);
+}
+
+function _getDamageTypeFromIcon(src = "") {
+    const iconType = String(src ?? "").match(/\/damage\/([^/.]+)\./)?.[1];
+    if (!iconType) return null;
+    if (iconType === "maxhp") return "maximum";
+    if (CONFIG.DND5E.damageTypes?.[iconType] || CONFIG.DND5E.healingTypes?.[iconType]) return iconType;
+    return null;
+}
+
+function _getDamageTypeFromLabel(label = "") {
+    const normalized = String(label ?? "").trim().toLowerCase();
+    if (!normalized) return null;
+    for (const [type, config] of Object.entries({ ...CONFIG.DND5E.damageTypes, ...CONFIG.DND5E.healingTypes })) {
+        for (const value of [type, config?.label, config?.labelShort]) {
+            if (value && CoreUtility.localize(String(value)).trim().toLowerCase() === normalized) return type;
+        }
+    }
+    return null;
+}
+
+/**
+ * Mark the damage breakdown parts of an RSR card whose type can be switched between the
+ * activity's candidate types; clicking the type label/icon cycles it (nothing is re-rolled).
+ */
+function _injectDamageTypeToggles(message, content) {
     if (!_canChangeDamageType(message)) return;
+    const damageRolls = _getDamageRolls(message);
+    if (!damageRolls.length) return;
 
-    const type = $(event.currentTarget).closest('.rsr-damage-type-toggle').attr('data-rsr-damage-type');
-    if (!type) return;
+    const button = content.querySelector('button.dice-roll[data-rsr-roll-kind="damage"]');
+    const popover = button?.nextElementSibling;
+    if (!popover?.matches?.(".roll-breakdown")) return;
+
+    for (const part of popover.querySelectorAll(".tooltip-part")) {
+        const total = part.querySelector(".total");
+        if (!total) continue;
+        const type = _getDamageTypeFromIcon(total.querySelector("img")?.getAttribute("src"))
+            ?? _getDamageTypeFromLabel(total.querySelector(".label")?.textContent);
+        if (!_getCyclableDamageRolls(damageRolls, type).length) continue;
+        part.classList.add("rsr-damage-type-toggle");
+        part.dataset.rsrDamageType = type;
+        const title = CoreUtility.localize(`${MODULE_SHORT}.chat.buttons.damageType`);
+        for (const el of total.querySelectorAll(".label, img")) {
+            el.dataset.tooltip = title;
+            el.addEventListener("click", event => {
+                event.preventDefault();
+                event.stopPropagation();
+                _processDamageTypeCycle(message, type);
+            });
+        }
+    }
+}
+
+async function _processDamageTypeCycle(message, type) {
+    if (!_canChangeDamageType(message) || !type) return;
 
     const originalRolls = ChatUtility.getMessageRolls(message);
     const damageRolls = originalRolls.filter(_isDamageRoll);
@@ -1583,114 +1221,29 @@ async function _processDamageTypeCycleEvent(message, event) {
     if (!targets.length) return;
 
     const damageTypes = { ...(message.flags[MODULE_SHORT].damageTypes ?? {}) };
-
     for (const roll of targets) {
         const options = _getDamageTypeOptions(roll);
-        // A current type missing from the list wraps to the first entry rather than
-        // leaving the roll stuck.
         const next = options[(options.indexOf(roll.options.type) + 1) % options.length];
-
         roll.options.type = next;
-        // Keyed by index within the damage rolls — the array getDamageFromMessage returns.
         damageTypes[damageRolls.indexOf(roll)] = next;
     }
 
-    // The label is only reachable with the breakdown open, so remember to reopen it
-    // after the update re-renders the card (see _injectDamageTypeToggles).
-    message._rsrExpandDamageTooltip = $(event.currentTarget).closest('.dice-roll').hasClass('expanded');
-
+    message._rsrReopenCandidate = { kind: "damage", index: null, summary: false, at: Date.now() };
     message.flags[MODULE_SHORT].damageTypes = damageTypes;
-    // The mutated rolls are shared with originalRolls, so serializing the full array
-    // keeps the card's attack (and any other) rolls intact.
-    message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(originalRolls);
+    await ChatUtility.persistRolls(message, originalRolls);
 
-    await ChatUtility.updateChatMessage(message, {
-        flags: message.flags
-    });
-
-    // Card first, then the activity's default — the visible change should not wait on an
-    // item write, and a failure to remember must not lose the choice already made here.
-    // Re-read rather than reusing the pre-await snapshot so the default records what the
-    // card actually says now. Two clients racing the same card can still land their card
-    // and item writes in different orders; only the remembered default is affected, and
-    // the next roll's own write corrects it.
+    // Card first, then the activity's remembered default.
     await ActivityUtility.rememberDamageTypes(message, _getDamageRolls(message));
 }
 
-async function _processRetroAdvButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const button = event.currentTarget;
-    const action = button.dataset.action;
-    const state = button.dataset.state;
-    const key = $(button).closest('.rsr-multiroll')[0].dataset.key;
-
-    if (action === "rsr-retro") {
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.CONFIRM_RETRO_ADV)) {        
-            const dialogOptions = {
-                width: 100,
-                top: event ? event.clientY - 50 : null,
-                left: window.innerWidth - 510
-            }
-    
-            const target = state === ROLL_STATE.ADV ? CoreUtility.localize("DND5E.Advantage") : CoreUtility.localize("DND5E.Disadvantage");
-            const confirmed = await DialogUtility.getConfirmDialog(CoreUtility.localize(`${MODULE_SHORT}.chat.prompts.retroAdv`, { target }), dialogOptions);
-    
-            if (!confirmed) return;
-        }
-        
-        message.flags[MODULE_SHORT].advantage = state === ROLL_STATE.ADV;
-        message.flags[MODULE_SHORT].disadvantage = state === ROLL_STATE.DIS;
-
-        const originalRolls = ChatUtility.getMessageRolls(message);
-        const rollIndex = originalRolls.findIndex(r => r instanceof CONFIG.Dice.D20Roll || r.class === "D20Roll");
-        
-        if (rollIndex > -1) {
-            const upgradedRoll = await RollUtility.upgradeRoll(originalRolls[rollIndex], state);
-            if (upgradedRoll) originalRolls[rollIndex] = upgradedRoll;
-        }
-
-        if (key !== ROLL_TYPE.ATTACK && key !== ROLL_TYPE.TOOL_CHECK && originalRolls[rollIndex]) {
-            message.flavor += originalRolls[rollIndex].hasAdvantage 
-                ? ` (${CoreUtility.localize("DND5E.Advantage")})` 
-                : ` (${CoreUtility.localize("DND5E.Disadvantage")})`;
-        }
-
-        message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(originalRolls);
-
-        await ChatUtility.updateChatMessage(message, {
-            flags: message.flags,
-            flavor: message.flavor
-        });
-
-        // The attack D20 roll just changed; re-register it in dnd5e's MessageRegistry so
-        // AC5e resolves the upgraded roll on a subsequent damage roll. Runs after the
-        // persist so it wins over dnd5e's prepareData -> track (which would re-read the
-        // stale native rolls). No-ops for non-attack cards.
-        ChatUtility.resyncAttackRegistry(message);
-
-        if (!game.dice3d || !game.dice3d.isEnabled()) {
-            CoreUtility.playRollSound();
-        }
-    }
-}
+/* -------------------------------------------- */
+/*  Retroactive critical                        */
+/* -------------------------------------------- */
 
 /**
- * Keep the dice already rolled on the card when it is retroactively made critical: copy
- * each base die's results into the matching die of the freshly built critical roll, so
- * only the extra critical dice are new.
- *
- * dnd5e 6.0's DamageRoll#configureDamage no longer maps terms 1:1 (#applyCriticalTerm):
- * plain dice are altered in place, but modified or complex terms are followed by cloned
- * copies, terms bound by `*`, `/` or `%` are wrapped (with their copies) in a
- * ParentheticalTerm, powerful criticals add a NumericTerm, and critical bonus damage is
- * appended. Term indices therefore drift. Instead, walk both rolls' flattened dice
- * (Roll#dice, which includes dice inside parentheticals) in order and pair each base die
- * with the next critical die of the same size: originals always precede their copies, so
- * the pairing lands on the original.
- * @param {DamageRoll} baseRoll The card's current (non-critical) damage roll.
- * @param {DamageRoll} critRoll The newly rolled critical version.
+ * Keep the dice already rolled on the card when it is retroactively made critical: copy each
+ * base die's results into the matching die of the freshly built critical roll (pairing dice
+ * of the same size in order, robust to dnd5e 6's critical term insertion/wrapping).
  */
 function _copyBaseDiceIntoCritical(baseRoll, critRoll) {
     const critDice = critRoll.dice ?? [];
@@ -1714,7 +1267,6 @@ function _copyBaseDiceIntoCritical(baseRoll, critRoll) {
         match.results.splice(0, baseResults.length, ...foundry.utils.deepClone(baseResults));
     }
 
-    // Parenthetical groups cache their inner roll's total; recompute it from the new results.
     for (const term of critRoll.terms) {
         const inner = term?.roll;
         if (inner && typeof inner._evaluateTotal === "function") {
@@ -1723,64 +1275,47 @@ function _copyBaseDiceIntoCritical(baseRoll, critRoll) {
     }
 }
 
-async function _processRetroCritButtonEvent(message, event) {
-    event.preventDefault();
-    event.stopPropagation();
+async function _processRetroCrit(message) {
+    if (!ChatUtility.isRsrUsageCard(message) || !ChatUtility.canModify(message)) return;
 
-    const button = event.currentTarget;
-    const action = button.dataset.action;
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.CONFIRM_RETRO_CRIT)) {
+        const confirmed = await DialogUtility.getConfirmDialog(CoreUtility.localize(`${MODULE_SHORT}.chat.prompts.retroCrit`));
+        if (!confirmed) return;
+    }
 
-    if (action === "rsr-retro") {
-        if (SettingsUtility.getSettingValue(SETTING_NAMES.CONFIRM_RETRO_CRIT)) {        
-            const dialogOptions = {
-                width: 100,
-                top: event ? event.clientY - 50 : null,
-                left: window.innerWidth - 510
-            }
-    
-            const confirmed = await DialogUtility.getConfirmDialog(CoreUtility.localize(`${MODULE_SHORT}.chat.prompts.retroCrit`), dialogOptions);
-    
-            if (!confirmed) return;
-        }
-        
-        message.flags[MODULE_SHORT].isCritical = true;
+    const flags = message.flags[MODULE_SHORT];
+    flags.isCritical = true;
 
-        const originalRolls = ChatUtility.getMessageRolls(message);
-        let newRolls = Array.from(originalRolls);
+    const originalRolls = ChatUtility.getMessageRolls(message);
+    let newRolls = Array.from(originalRolls);
 
-        const rolls = originalRolls.filter(_isDamageRoll);
-        const crits = ActivityUtility._extractRolls(await ActivityUtility.getDamageFromMessage(message));
-        if (!crits.length) {
-            message.flags[MODULE_SHORT].isCritical = false;
-            return;
-        }
+    const rolls = originalRolls.filter(_isDamageRoll);
+    const crits = ActivityUtility._extractRolls(await ActivityUtility.getDamageFromMessage(message));
+    if (!crits.length) {
+        flags.isCritical = false;
+        return;
+    }
 
-        // Retain original behavior for MIDI users if required
-        if (CoreUtility.hasModule(MODULE_MIDI)) {
-            newRolls = originalRolls;
-        }
+    // Retain original behavior for MIDI users if required
+    if (CoreUtility.hasModule(MODULE_MIDI)) {
+        newRolls = originalRolls;
+    }
 
-        for (let i = 0; i < rolls.length; i++) {
-            const baseRoll = rolls[i];
-            const critRoll = crits[i];
-            if (!critRoll) continue;
+    for (let i = 0; i < rolls.length; i++) {
+        const baseRoll = rolls[i];
+        const critRoll = crits[i];
+        if (!critRoll) continue;
 
-            _copyBaseDiceIntoCritical(baseRoll, critRoll);
+        _copyBaseDiceIntoCritical(baseRoll, critRoll);
 
-            RollUtility.resetRollGetters(critRoll);
-            newRolls[originalRolls.indexOf(baseRoll)] = critRoll;
-        }
+        RollUtility.resetRollGetters(critRoll);
+        newRolls[originalRolls.indexOf(baseRoll)] = critRoll;
+    }
 
-        await CoreUtility.tryRollDice3D(crits, message.id);
+    await CoreUtility.tryRollDice3D(crits, message.id);
+    await ChatUtility.persistRolls(message, newRolls);
 
-        message.flags[MODULE_SHORT].rolls = CoreUtility.serializeRolls(newRolls);
-
-        ChatUtility.updateChatMessage(message, {
-            flags: message.flags
-        });
-
-        if (!game.dice3d || !game.dice3d.isEnabled()) {
-            CoreUtility.playRollSound();
-        }
+    if (!game.dice3d || !game.dice3d.isEnabled()) {
+        CoreUtility.playRollSound();
     }
 }
