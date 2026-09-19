@@ -135,7 +135,7 @@ export class ChatUtility {
         }
 
         if (hiddenFromUser) return;
-        PrivacyUtility.injectRevealButton(message, element);
+        // GM reveal control only on save/check summary lines, not in message headers.
         PrivacyUtility.processSummaries(element);
 
         // dnd5e hides child messages that its origin card summarizes.
