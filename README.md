@@ -29,29 +29,24 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/arrowedisgaming/RSReforged/master/assets/screenshots/npc-quick-roll-overview.png"
-       alt="NPC sheet alongside an RSReforged quick-roll chat card showing an attack, damage by type, and per-damage apply buttons"
+  <img src="https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/attack-card.png"
+       alt="An Ancient Green Dragon's Rend attack as one RSReforged card in dnd5e 6's compact style: targets, attack roll with both d20s, damage and the damage tray"
        width="100%">
 </p>
 
-<p align="center"><em>Quick rolls drop straight into chat — attack, damage split by type, and per-target apply buttons in one card.</em></p>
+<p align="center"><em>One card per attack in dnd5e 6's own style: targets, attack (both d20s shown), damage and the apply tray.</em></p>
 
 <table>
   <tr>
-    <td width="33%" align="center">
-      <img src="https://raw.githubusercontent.com/arrowedisgaming/RSReforged/master/assets/screenshots/per-type-damage-apply.png"
-           alt="Close-up of damage rolls split by type with independent apply buttons">
-      <br><sub>Damage splits by type — apply fire here, cold there, independently.</sub>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/roll-breakdown.png"
+           alt="Roll breakdown popover with + Bonus and Disadvantage / Normal / Advantage buttons, next to the retroactive bonus dialog">
+      <br><sub>Click a roll: add a bonus, or switch to disadvantage / advantage without rerolling.</sub>
     </td>
-    <td width="33%" align="center">
-      <img src="https://raw.githubusercontent.com/arrowedisgaming/RSReforged/master/assets/screenshots/quick-roll-card.png"
-           alt="Collapsed quick-roll chat card showing attack and damage rolled in one go">
-      <br><sub>Collapsed default: one click to roll, one click to apply.</sub>
-    </td>
-    <td width="33%" align="center">
-      <img src="https://raw.githubusercontent.com/arrowedisgaming/RSReforged/master/assets/screenshots/pc-quick-roll-card.png"
-           alt="Player-character quick-roll chat card with a natural 1 on the attack die">
-      <br><sub>Works for PCs and NPCs alike.</sub>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/save-card.png"
+           alt="Poison Breath save card with the targets' saving throws summarized on the card and the damage tray">
+      <br><sub>Saves land on the card; the tray reads heart, temp HP, 0, ¼, ½, 1, 2.</sub>
     </td>
   </tr>
 </table>

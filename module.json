@@ -84,5 +84,22 @@
 	"manifest": "https://raw.githubusercontent.com/maxobremer/RSReforged/master/module.json",
 	"download": "https://github.com/maxobremer/RSReforged/releases/download/release-6.0.0/rsreforged-release-6.0.0.zip",
 	"changelog": "https://github.com/maxobremer/RSReforged/blob/master/CHANGELOG.md",
+	"media": [
+		{
+			"type": "screenshot",
+			"url": "https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/attack-card.png",
+			"caption": "One card per attack: targets, attack roll with both d20s, damage and the apply tray."
+		},
+		{
+			"type": "screenshot",
+			"url": "https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/roll-breakdown.png",
+			"caption": "Roll breakdown with + Bonus and retroactive advantage / disadvantage."
+		},
+		{
+			"type": "screenshot",
+			"url": "https://raw.githubusercontent.com/maxobremer/RSReforged/master/assets/screenshots/save-card.png",
+			"caption": "Save activity with the targets' saves summarized on the card."
+		}
+	],
 	"license": "LICENSE"
 }
