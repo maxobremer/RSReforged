@@ -1,34 +1,40 @@
-import { BonusManager } from "./bonus.js";
 import { RerollManager } from "./reroll.js";
 import { MODULE_NAME, MODULE_SHORT, MODULE_TITLE } from "../module/const.js";
 import { ActivityUtility } from "./activity.js";
 import { ChatUtility } from "./chat.js";
 import { CoreUtility } from "./core.js";
 import { LogUtility } from "./log.js";
+import { PrivacyUtility } from "./privacy.js";
 import { KEYBIND_VERSATILE_TWO_HANDED, ROLL_TYPE, RollUtility } from "./roll.js";
-import { SETTING_NAMES, SettingsUtility, HIDE_NPC_ROLL_MODES } from "./settings.js";
+import {
+    DAMAGE_APPLY_MODES, FORK_MIGRATION_VERSION, HIDE_NPC_ROLL_MODES, SETTING_NAMES, SettingsUtility
+} from "./settings.js";
+import { TrayUtility } from "./tray.js";
 
-export const HOOKS_CORE = { INIT: "init", READY: "ready" }
+export const HOOKS_CORE = { INIT: "init", SETUP: "setup", READY: "ready" }
 
 export const HOOKS_DND5E = {
     PRE_ROLL_ABILITY_CHECK: "dnd5e.preRollAbilityCheck",
     PRE_ROLL_SAVING_THROW: "dnd5e.preRollSavingThrow",
     PRE_ROLL_SKILL: "dnd5e.preRollSkill",
     PRE_ROLL_TOOL_CHECK: "dnd5e.preRollTool",
-    PRE_ROLL_ATTACK: "dnd5e.preRollAttack",
+    // Generic hook dnd5e fires LAST for every roll built through BasicRoll.buildConfigure
+    // (config.hookNames always ends with "" -> "dnd5e.preRollV2").
+    PRE_ROLL_V2: "dnd5e.preRollV2",
     POST_ROLL_CONFIGURATION: "dnd5e.postRollConfiguration",
-    PRE_ROLL_DAMAGE: "dnd5e.preRollDamage",
     PRE_USE_ACTIVITY: "dnd5e.preUseActivity",
-    // POST_USE_ACTIVITY is not used: usageConfig.subsequentActions = false is set in
-    // PRE_USE_ACTIVITY instead of returning false from POST_USE_ACTIVITY to block auto-rolls.
     ACTIVITY_CONSUMPTION: "dnd5e.activityConsumption",
-    DISPLAY_CARD: "dnd5e.displayCard",
-    RENDER_CHAT_MESSAGE: "dnd5e.renderChatMessage",
-    RENDER_ITEM_SHEET: "renderItemSheet5e",
-    RENDER_ACTOR_SHEET: "renderActorSheet5e",
+    RENDER_CHAT_MESSAGE: "dnd5e.renderChatMessage"
 }
 
 export const HOOKS_INTEGRATION = { DSN_ROLL_COMPLETE: "diceSoNiceRollComplete" }
+
+/**
+ * dnd5e 6 message types whose rolls RSR folds into an RSR usage card when they are created
+ * with that card as `system.origin` (e.g. a native card button, or another module calling
+ * activity.rollDamage for the card).
+ */
+const MERGEABLE_CHILD_TYPES = ["attack", "damage", "healing", "generic"];
 
 export class HooksUtility {
     static registerModuleHooks() {
@@ -41,7 +47,13 @@ export class HooksUtility {
             RerollManager.registerGlobalListener();
         });
 
-        Hooks.on(HOOKS_CORE.READY, async () => {
+        Hooks.once(HOOKS_CORE.SETUP, () => {
+            RollUtility.registerDiceModifiers();
+            TrayUtility.patchDamageApplication();
+            HooksUtility.wrapItemUse();
+        });
+
+        Hooks.once(HOOKS_CORE.READY, async () => {
             CONFIG[MODULE_SHORT].combinedDamageTypes = foundry.utils.mergeObject(
                 Object.fromEntries(Object.entries(CONFIG.DND5E.damageTypes).map(([k, v]) => [k, v.label])),
                 Object.fromEntries(Object.entries(CONFIG.DND5E.healingTypes).map(([k, v]) => [k, v.label])),
@@ -49,20 +61,16 @@ export class HooksUtility {
             );
             CONFIG.DND5E.aggregateDamageDisplay = SettingsUtility.getSettingValue(SETTING_NAMES.AGGREGATE_DAMAGE) ?? true;
             await _migrateHideNpcRollSetting().catch(err => LogUtility.logError(`Failed to migrate hide NPC roll setting: ${err}`));
+            await _migrateForkSettings().catch(err => LogUtility.logError(`Failed to migrate RSReforged fork settings: ${err}`));
+            HooksUtility.registerApi();
             LogUtility.log(`Loaded ${MODULE_TITLE}`);
         });
     }
 
     /**
-     * Register RSReforged-namespaced keybindings. Must be called during `init` —
-     * Foundry rejects keybinding registration once the game is ready.
-     *
-     * `versatileTwoHanded` defaults to KeyV (matching Midi-QOL's convention) and
-     * is rebindable through Foundry's *Configure Controls* UI. The keybinding does
-     * not need an `onDown`/`onUp` handler: we read the held state at click time
-     * via `game.keyboard.downKeys`, which Foundry maintains regardless of whether
-     * a handler is attached. The registration exists purely so the binding shows
-     * up in Configure Controls with a localised name.
+     * Register RSReforged-namespaced keybindings. Must be called during `init`.
+     * `versatileTwoHanded` defaults to KeyV and is read at click time via
+     * `game.keyboard.downKeys`; the registration exists so it shows in Configure Controls.
      */
     static registerKeybindings() {
         LogUtility.log("Registering keybindings");
@@ -80,14 +88,11 @@ export class HooksUtility {
         LogUtility.log("Registering roll hooks");
 
         Hooks.on(HOOKS_DND5E.PRE_ROLL_ABILITY_CHECK, (config, dialog, message) => {
-            // dnd5e fires preRollAbilityCheck for skill and tool checks too (their
-            // hookNames chain is [type, "abilityCheck", "d20Test"]). Defer to
-            // PRE_ROLL_SKILL / PRE_ROLL_TOOL_CHECK so each category's setting controls
-            // its own roll path instead of QUICK_ABILITY_ENABLED hijacking them.
+            // dnd5e fires preRollAbilityCheck for skill and tool checks too (their hookNames
+            // chain is [type, "abilityCheck", "d20Test"]); each category has its own hook.
             if (config.hookNames?.some(n => n === "skill" || n === "tool")) return true;
-            // The initiative dialog (Actor5e#rollInitiativeDialog) also chains through
-            // abilityCheck but never creates a message of its own; RSR has never
-            // quick-rolled it, so leave it to dnd5e.
+            // The initiative dialog never creates a message of its own; the generic
+            // PRE_ROLL_V2 handler still applies the fast-forward rule to it.
             if (config.hookNames?.includes("initiativeDialog")) return true;
 
             if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ABILITY_ENABLED)) {
@@ -95,6 +100,7 @@ export class HooksUtility {
             }
             return true;
         });
+
         Hooks.on(HOOKS_DND5E.PRE_ROLL_SAVING_THROW, (config, dialog, message) => {
             if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ABILITY_ENABLED)) {
                 RollUtility.processRoll(config, dialog, message);
@@ -116,89 +122,50 @@ export class HooksUtility {
             return true;
         });
 
-        // dnd5e 5.3.0: processActivity sets usageConfig.subsequentActions = false on the
-        // quick-roll path to prevent the system from auto-triggering attack/damage rolls
-        // after item use — RSR drives those itself via preCreateChatMessage +
-        // ActivityUtility.runActivityActions(). Slow-roll (shift-click) leaves
-        // subsequentActions alone so dnd5e's _triggerSubsequentActions can fire the
-        // follow-up rolls after the usage dialog closes.
+        // Fast-forward rule for every other roll that goes through dnd5e's pipeline (native
+        // attack / damage / healing / formula buttons, hit dice, initiative, ...): skip the
+        // configuration dialog unless the dnd5e "Skip Dialog" key (Shift) is held — the
+        // inverse of dnd5e's default. dnd5e 6.0.3 has no built-in setting to swap this.
+        // Ctrl/Alt keep their dnd5e meaning (disadvantage/advantage, or normal/critical for
+        // damage) because D20Roll/DamageRoll.applyKeybindings still reads them afterwards.
+        // Explicit `dialog.configure` values (RSR's own rolls, macros, AC5e, Codex GMC) win.
+        Hooks.on(HOOKS_DND5E.PRE_ROLL_V2, (config, dialog, message) => {
+            if (!dialog || dialog.configure !== undefined) return true;
+            if (!SettingsUtility.fastForwardAppliesTo(config?.hookNames ?? [])) return true;
+            dialog.configure = RollUtility.wantsConfigure(config?.event);
+            LogUtility.debug("fast-forward", config?.hookNames, { configure: dialog.configure });
+            return true;
+        });
+
         Hooks.on(HOOKS_DND5E.PRE_USE_ACTIVITY, (activity, usageConfig, dialogConfig, messageConfig) => {
-            if (
-                SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)
-                && !SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED)
-            ) {
+            if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) {
                 RollUtility.processActivity(activity, usageConfig, dialogConfig, messageConfig);
             }
             return true;
         });
 
-        Hooks.on(HOOKS_DND5E.PRE_ROLL_ATTACK, (config, dialog, message) => {
-            if (
-                !SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)
-                || SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED)
-            ) return true;
-
-            const flags = message?.flags || message?.data?.flags;
-            if (!flags || !flags[MODULE_SHORT]?.quickRoll) return true;
-
-            for (const roll of config.rolls) {
-                roll.options.advantage ??= config.advantage;
-                roll.options.disadvantage ??= config.disadvantage;
-            }
-            dialog.configure = false;
-            return true;
-        });
-
-        // The last configuration hook dnd5e fires before a roll is evaluated. An attack
-        // fires three in sequence — postAttackRollConfiguration, postD20TestRollConfiguration,
-        // postRollConfiguration — as BasicRoll.buildConfigure walks config.hookNames, so
-        // only this one is guaranteed to run after every listener that adjusts a roll
-        // against its targets (cover, condition automation) has rewritten the pending
-        // message configuration.
-        //
-        // RSR rolls with create:false, so dnd5e discards that configuration; without this
-        // capture the card keeps the target descriptors Activity#use stamped on it before
-        // the roll, which predate all of those adjustments (issue #38).
-        //
-        // Registered for every roll type rather than just attacks: captureRollMessageConfig
-        // no-ops unless the config carries RSR's own correlation token, which is cheaper
-        // and more robust than re-deriving the quick-roll settings here. Must not return
-        // false — dnd5e treats that as a veto and cancels the roll.
+        // The last configuration hook dnd5e fires before a roll is evaluated (after any
+        // dialog). Two jobs, both must never return false (that vetoes the roll):
+        //  - capture the pending message configuration of RSR's own rolls (targets adjusted
+        //    by cover / condition modules, issue #38);
+        //  - multiroll: make normal-mode d20 rolls "2d20kf" so advantage/disadvantage can be
+        //    applied afterwards without rolling again.
         Hooks.on(HOOKS_DND5E.POST_ROLL_CONFIGURATION, (rolls, config, dialog, message) => {
             ActivityUtility.captureRollMessageConfig(message);
-        });
-
-        Hooks.on(HOOKS_DND5E.PRE_ROLL_DAMAGE, (config, dialog, message) => {
-            if (
-                !SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)
-                || SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED)
-            ) return true;
-
-            const flags = message?.flags || message?.data?.flags;
-            if (!flags || !flags[MODULE_SHORT]?.quickRoll) return true;
-
-            for (const roll of config.rolls) {
-                roll.options ??= {};
-                roll.options.isCritical ??= config.isCritical;
+            try {
+                RollUtility.applyMultiRoll(rolls, config);
+            } catch (err) {
+                console.error("RSReforged | multiroll setup failed", err);
             }
-            dialog.configure = false;
-            return true;
         });
 
-        // dnd5e 5.3.0: ActivityUsageUpdates always uses `updates.item` (an array of
-        // { _id, ...dotNotationProperties } objects). The `updates.items` key from older
-        // versions no longer exists and has been removed from this hook.
+        // dnd5e 5.3.0+: ActivityUsageUpdates always uses `updates.item`.
         Hooks.on(HOOKS_DND5E.ACTIVITY_CONSUMPTION, (activity, usageConfig, messageConfig, updates) => {
-            if (
-                !SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)
-                || SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED)
-            ) return;
+            if (!SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) return;
 
-            // processActivity seeds this namespace during preUseActivity for both RSR
-            // quick rolls and RSR-managed slow rolls. dnd5e's later chat-card
-            // "Consume Resource" action invokes this same hook with an empty
-            // messageConfig and no rollAttack follows, so capturing/restoring ammo in
-            // that path would both overwrite card state and cancel real consumption.
+            // processActivity seeds this namespace during preUseActivity. dnd5e's later
+            // chat-card "Consume Resource" action invokes this hook with an empty
+            // messageConfig and no rollAttack follows, so it must be left alone.
             const moduleFlags = messageConfig.data?.flags?.[MODULE_SHORT];
             if (!moduleFlags) return;
 
@@ -212,12 +179,7 @@ export class HooksUtility {
                 moduleFlags.ammunition = ammo._id;
 
                 // Add back the single unit that dnd5e's rollAttack will itself decrement, but
-                // only when this item is a valid weapon-ammunition option that reaches
-                // rolls[].options.ammunition (dnd5e.mjs AttackActivity#rollAttack) — otherwise
-                // the consumption phase and the attack roll would each spend one. A standalone
-                // "material"/Consume-Resource target (e.g. a vehicle cannon's cannonballs) is
-                // decremented ONLY by the consumption phase, so adding one back here would
-                // cancel a unit of its consumption (issue #34).
+                // only for a weapon-ammunition option (issue #34).
                 if (ammo["system.quantity"] !== undefined) {
                     const isWeaponAmmo = activity.item?.system?.ammunitionOptions?.some(o => o.value === ammo._id);
                     if (isWeaponAmmo) ammo["system.quantity"]++;
@@ -232,18 +194,7 @@ export class HooksUtility {
         Hooks.on("preCreateChatMessage", (message, data, options, userId) => {
             if (userId !== game.user.id) return;
 
-            // Forward-compat hygiene: dnd5e 5.3's D20Roll constructs its d20 term using
-            // Foundry's legacy `Die` class, while Foundry V14 canonicalises on `BasicDie`
-            // (the subclass registered at CONFIG.Dice.terms.d, which extends Die with
-            // modifier aliases). Sheet-initiated roll messages therefore serialise with
-            // `term.class === "Die"` while chat-command rolls serialise as `"BasicDie"`.
-            // Rewriting the serialised class so Foundry rebuilds sheet-roll terms as
-            // BasicDie aligns RSR-processed messages with the V14 canonical and keeps
-            // the stored representation consistent across entry points. The swap is
-            // safe because BasicDie extends Die — every method, modifier, and behaviour
-            // is inherited, and dnd5e-specific behaviour (advantage mode, elven accuracy,
-            // halfling lucky, crit/fumble thresholds) lives on `term.options` as data
-            // and is consumed at D20Roll level, not on the Die class itself.
+            // Forward-compat hygiene: rewrite legacy `Die` terms to V14's canonical BasicDie.
             if (message.rolls?.length) {
                 let changed = false;
                 const patched = CoreUtility.serializeRolls(message.rolls);
@@ -258,17 +209,15 @@ export class HooksUtility {
                 if (changed) message.updateSource({ rolls: patched });
             }
 
+            // A roll message whose origin is an RSR card: put the rolls on the card instead.
+            if (HooksUtility._interceptChildRollMessage(message)) return false;
+
             const t = message.type;
-            // Usage cards are typed "usage" (Activity#_createUsageMessage, via
-            // metadata.usage.messageType). Legacy fallbacks are kept for other modules.
             const isUsage = t === "usage"
                 || t === "dnd5e.usage"
                 || ((!t || t === "base") && (message.flags?.dnd5e?.messageType === "usage" || !!message.flags?.dnd5e?.use));
 
             if (isUsage && SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) {
-                const quickVanilla = SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED);
-                if (quickVanilla) return;
-
                 const flags = { ...(message.flags?.[MODULE_SHORT] || {}) };
                 flags.quickRoll ??= true;
                 flags.processed ??= false;
@@ -276,56 +225,148 @@ export class HooksUtility {
                 const activity = ActivityUtility._getActivityFromMessage(message);
 
                 if (activity) {
-                    // Single source of truth for render-flag derivation (activity.js).
                     ActivityUtility.setRenderFlags(activity, flags);
                 } else if (flags.quickRoll) {
-                    // Slow-roll messages are driven by dnd5e's dialog path; only quick-roll
-                    // messages need an immediately resolvable activity for RSR rendering.
-                    // Not fatal: runActivityActions retries resolution at render time,
-                    // when the persisted document's getAssociatedActivity is available.
-                    LogUtility.logWarning("Could not resolve activity during preCreate; will retry at render.");
+                    LogUtility.logWarning("Could not resolve activity during preCreate; will retry at render.", { ui: false });
                 }
 
                 message.updateSource({ [`flags.${MODULE_SHORT}`]: flags });
             }
         });
 
-        // dnd5e 6.0: every system-typed message (usage, attack, damage, check, save, ...)
-        // has a ChatMessageDataModel whose getHTML() re-renders `.message-content` from
-        // system data AFTER core fires renderChatMessageHTML (ChatMessage5e#renderHTML ->
-        // chat-message-data-model.mjs getHTML). Anything RSR injected from
-        // renderChatMessageHTML would be wiped, so all RSR DOM work happens on
-        // dnd5e.renderChatMessage, which ChatMessage5e#renderHTML fires last, for every
-        // message and on every (re-)render. Re-injecting on each render is what keeps
-        // RSR's content alive across message updates and chat log re-renders.
+        // dnd5e 6.0: every system-typed message re-renders `.message-content` from system data
+        // in ChatMessage5e#renderHTML AFTER core's renderChatMessageHTML, then fires
+        // dnd5e.renderChatMessage last — for every message and every (re-)render. All RSR DOM
+        // work therefore happens here and is recomputed from message data each time.
         Hooks.on(HOOKS_DND5E.RENDER_CHAT_MESSAGE, (message, html) => {
             const element = html instanceof HTMLElement ? html : html?.[0];
             if (!message || !element) return;
-            const $html = $(element);
-
-            ChatUtility.processChatMessage(message, element);
-            BonusManager.init(message, $html);
-
-            // RSR's injection is asynchronous; keep decorating the element as it lands.
-            const markReady = () => $(element).find('.dice-tooltip .dice-rolls .roll.die').not('.rsr-ready').addClass('rsr-ready');
-            const observer = new MutationObserver(() => {
-                BonusManager.init(message, $(element));
-                markReady();
+            ChatUtility.processChatMessage(message, element).catch(err => {
+                console.error("RSReforged | failed to process chat message", message?.id, err);
+                element.classList.remove("rsr-hide");
             });
-            observer.observe(element, { childList: true, subtree: true });
-            setTimeout(() => observer.disconnect(), 15000);
+        });
 
-            markReady();
+        // A summarized child (save/check folded into a usage card) was revealed or its rolls
+        // changed (retro advantage, bonus, reroll): dnd5e only refreshes the origin card for
+        // `system` changes, so re-render it here on every client.
+        Hooks.on("updateChatMessage", (message, changed) => {
+            if (!("whisper" in changed) && !("blind" in changed) && !("rolls" in changed)) return;
+            let origin = null;
+            try { origin = message.system?.origin ?? null; } catch (err) { origin = null; }
+            if (origin && origin !== message && origin.id) ui.chat?.updateMessage?.(origin);
         });
     }
 
-    static registerSheetHooks() {}
-    static registerIntegrationHooks() {}
+    /**
+     * Fold a new child roll message (native Attack / Damage / Healing / Formula button of an
+     * RSR card, or a module rolling for the card) into its RSR origin card.
+     * @param {ChatMessage} message The pending (pre-create) message.
+     * @returns {boolean} Whether creation should be cancelled.
+     */
+    static _interceptChildRollMessage(message) {
+        if (!MERGEABLE_CHILD_TYPES.includes(message.type)) return false;
+        if (!SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) return false;
+        if (message.flags?.[MODULE_SHORT]?.noMerge) return false;
+        const originId = message._source?.system?.origin;
+        if (!originId || typeof originId !== "string") return false;
+        const origin = game.messages.get(originId);
+        if (!ChatUtility.isRsrUsageCard(origin) || !origin.flags[MODULE_SHORT].processed) return false;
+        if (!origin.canUserModify?.(game.user, "update")) return false;
+        if (!message.rolls?.length) return false;
+
+        LogUtility.debug("merging child roll message into card", message.type, origin.id);
+        ChatUtility.mergeChildRollMessage(origin, message).catch(err => {
+            console.error("RSReforged | failed to merge roll into card", err);
+        });
+        return true;
+    }
+
+    /**
+     * dnd5e's Item#use skips the activity chooser when Shift is held (`!event?.shiftKey`).
+     * Shift means "configure" in this fork, so for multi-activity items the chooser is shown
+     * anyway and the configure request is carried to preUseActivity via `rsrConfigure`.
+     */
+    static wrapItemUse() {
+        const proto = CONFIG.Item?.documentClass?.prototype;
+        if (!proto || typeof proto.use !== "function" || proto._rsrUseWrapped) return;
+        const original = proto.use;
+        proto.use = function (config = {}, dialog = {}, message = {}) {
+            try {
+                const event = config?.event;
+                if (event?.shiftKey
+                    && SettingsUtility.getSettingValue(SETTING_NAMES.FAST_FORWARD_ROLLS)
+                    && SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_ACTIVITY_ENABLED)) {
+                    const usable = this.system?.activities?.filter?.(a => a.canUse) ?? [];
+                    if (usable.length > 1 || config.chooseActivity) {
+                        const shiftless = new Proxy(event, {
+                            get(target, property) {
+                                if (property === "shiftKey") return false;
+                                const value = Reflect.get(target, property);
+                                return typeof value === "function" ? value.bind(target) : value;
+                            }
+                        });
+                        config = { ...config, event: shiftless, rsrConfigure: true };
+                    }
+                }
+            } catch (err) {
+                console.warn("RSReforged | Item#use wrapper failed, falling back", err);
+            }
+            return original.call(this, config, dialog, message);
+        };
+        proto._rsrUseWrapped = true;
+    }
+
+    /**
+     * `game.modules.get("rsreforged").api` — small helpers for live testing.
+     */
+    static registerApi() {
+        const module = game.modules.get(MODULE_NAME);
+        if (!module) return;
+        module.api = {
+            reveal: message => PrivacyUtility.reveal(typeof message === "string" ? game.messages.get(message) : message),
+            setD20Mode: async (messageId, rollIndex, mode) => ChatUtility.retroD20Mode(game.messages.get(messageId), rollIndex, mode, { confirm: false }),
+            debug: {
+                /** Turn console debug logging on/off (client setting). */
+                enable: (on = true) => game.settings.set(MODULE_NAME, SETTING_NAMES.DEBUG, !!on),
+                /** Current module settings. */
+                settings: () => Object.fromEntries(Object.values(SETTING_NAMES)
+                    .map(key => { try { return [key, game.settings.get(MODULE_NAME, key)]; } catch (err) { return [key, undefined]; } })),
+                /** Summary of a message (default: the latest). */
+                inspect: (messageId) => {
+                    const message = messageId ? game.messages.get(messageId) : game.messages.contents.at(-1);
+                    if (!message) return null;
+                    const rolls = ChatUtility.getMessageRolls(message);
+                    return {
+                        id: message.id,
+                        type: message.type,
+                        rsrType: ChatUtility.getMessageType(message),
+                        isRsrCard: ChatUtility.isRsrUsageCard(message),
+                        flags: foundry.utils.deepClone(message.flags?.[MODULE_SHORT] ?? null),
+                        whisper: message.whisper,
+                        blind: message.blind,
+                        visible: message.visible,
+                        isContentVisible: message.isContentVisible,
+                        rolls: rolls.map(r => ({
+                            class: r.constructor?.name ?? r.class,
+                            formula: r.formula,
+                            total: r.total,
+                            mode: RollUtility.getD20Term(r) ? RollUtility.getD20Mode(r) : undefined,
+                            d20: RollUtility.getD20Term(r)?.results?.map(x => ({ ...x }))
+                        })),
+                        nativeRolls: message.rolls?.length ?? 0
+                    };
+                },
+                trayPatched: () => !!customElements.get("damage-application")?.prototype?._rsrPatched,
+                multirollModifier: () => !!CONFIG.Dice?.D20Die?.MODIFIERS?.kf,
+                itemUseWrapped: () => !!CONFIG.Item?.documentClass?.prototype?._rsrUseWrapped
+            }
+        };
+    }
 }
 
 async function _migrateHideNpcRollSetting() {
-    // Both settings are world-scoped and only GMs may write those, so non-GM
-    // clients must not attempt the migration (the set call would throw).
+    // Both settings are world-scoped and only GMs may write those.
     if (!game.user.isGM) return;
 
     const legacyEnabled = SettingsUtility.getSettingValue(SETTING_NAMES.HIDE_FINAL_RESULT_ENABLED);
@@ -336,8 +377,30 @@ async function _migrateHideNpcRollSetting() {
         await game.settings.set(MODULE_NAME, SETTING_NAMES.HIDE_NPC_ROLL_MODE, HIDE_NPC_ROLL_MODES.ATTACKS);
     }
 
-    // Clear the legacy flag so the migration is one-shot. Without this, a GM who
-    // deliberately sets the new mode back to "none" would have it silently forced
-    // back to "attacks" on every subsequent reload.
     await game.settings.set(MODULE_NAME, SETTING_NAMES.HIDE_FINAL_RESULT_ENABLED, false);
+}
+
+/**
+ * One-shot migrations for the GMC fork (5.0.0):
+ *  - world (GM): the retired RSR apply-button mode "rsr" becomes the native tray, the retired
+ *    "vanilla" master switch is cleared;
+ *  - client: multiroll becomes the default (a stored `false` from the old default is reset
+ *    once; the user may turn it off again afterwards).
+ */
+async function _migrateForkSettings() {
+    if (game.user.isGM && SettingsUtility.getSettingValue(SETTING_NAMES.MIGRATION_VERSION) !== FORK_MIGRATION_VERSION) {
+        if (SettingsUtility.getSettingValue(SETTING_NAMES.DAMAGE_APPLY_MODE) !== DAMAGE_APPLY_MODES.DND5E) {
+            await game.settings.set(MODULE_NAME, SETTING_NAMES.DAMAGE_APPLY_MODE, DAMAGE_APPLY_MODES.DND5E);
+        }
+        if (SettingsUtility.getSettingValue(SETTING_NAMES.QUICK_VANILLA_ENABLED)) {
+            await game.settings.set(MODULE_NAME, SETTING_NAMES.QUICK_VANILLA_ENABLED, false);
+        }
+        await game.settings.set(MODULE_NAME, SETTING_NAMES.MIGRATION_VERSION, FORK_MIGRATION_VERSION);
+        LogUtility.log(`Migrated world settings to fork ${FORK_MIGRATION_VERSION}`);
+    }
+
+    if (SettingsUtility.getSettingValue(SETTING_NAMES.CLIENT_MIGRATION_VERSION) !== FORK_MIGRATION_VERSION) {
+        await game.settings.set(MODULE_NAME, SETTING_NAMES.ALWAYS_ROLL_MULTIROLL, true);
+        await game.settings.set(MODULE_NAME, SETTING_NAMES.CLIENT_MIGRATION_VERSION, FORK_MIGRATION_VERSION);
+    }
 }
