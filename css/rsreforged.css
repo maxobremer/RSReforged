@@ -1,374 +1,159 @@
-.rsr-multiroll {
-    display: flex;
+/* ==========================================
+   RSReforged (GMC fork) — dnd5e 6 compact style
+   ========================================== */
+
+.rsr-hide,
+.rsr-private-hidden {
+	display: none !important;
 }
 
-.rsr-multiroll .dice-total.ignored {
-	opacity: .4;
-	border: 1px solid #888888;
+/* ---------- Multiroll: ignored d20s next to the kept one ---------- */
+
+.chat-log .message.compact button.dice-roll .d20die.rsr-d20die-alt,
+.chat-popout .message.compact button.dice-roll .d20die.rsr-d20die-alt,
+#chat-notifications .message.compact button.dice-roll .d20die.rsr-d20die-alt {
+	inset-inline-end: calc(8px + var(--rsr-alt-index, 1) * 22px);
+	opacity: 0.4;
+	filter: grayscale(1);
 }
 
-.rsr-multiroll .die-icon {
-	background-image: url(../../../icons/svg/d20-grey.svg);
-	width: 22px;
-	line-height: 22px;
-	background-size: 22px;
-	background-repeat: no-repeat;
-	float: left;
-	font-weight: bold;
-	font-size: 13px;
-	text-align: center;
-	opacity: 0.95;
-
-	position: absolute;
-	top: 50%;
-	right: 5px;
-	transform: translate(0, -50%);
+.chat-log .message.compact button.dice-roll .d20die.rsr-d20die-alt > i,
+.chat-popout .message.compact button.dice-roll .d20die.rsr-d20die-alt > i,
+#chat-notifications .message.compact button.dice-roll .d20die.rsr-d20die-alt > i {
+	color: var(--dnd5e-chat-color-die);
 }
 
-.rsr-multiroll .success .die-icon,
-.rsr-multiroll .critical .die-icon {
-	filter: sepia(0.5) hue-rotate(60deg);
-}
+/* ---------- Action row inside a roll's breakdown popover ---------- */
 
-.rsr-multiroll .failure .die-icon,
-.rsr-multiroll .fumble .die-icon {
-	filter: sepia(0.5) hue-rotate(-60deg);
-}
-
-.dice-result .rsr-multiroll .dice-total::before,
-.dice-result .rsr-multiroll .dice-total::after {
-	display: none;
-}
-
-.rsr-header {
-	margin-bottom: 0.25rem;
-}
-
-.rsr-supplement {
-	font-size: var(--font-size-11);
-	color: var(--color-text-dark-5);
-	margin: 0.25rem 0 0;
-	text-align: center;
-}
-
-.rsr-supplement > strong {
-	color: var(--color-text-dark-primary);
-	text-transform: uppercase;
-	font-size: var(--font-size-10);
-}
-
-.rsr-title {
-	font-family: var(--dnd5e-font-roboto);
-	font-weight: bold;
-	font-size: var(--font-size-13);
-	text-transform: uppercase;
+.roll-breakdown .rsr-roll-actions {
 	display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.25rem;
-	margin-bottom: 0.1rem;
-}
-
-.rsr-subtitle {
-	font-family: var(--dnd5e-font-roboto);
-	font-style: italic;
-	font-size: var(--font-size-12);
-	display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.rsr-context {
-	font-family: var(--dnd5e-font-roboto);
-    font-size: var(--font-size-11);
-    color: var(--color-text-dark-5);
-	text-align: center;
-	border: 1px solid var(--color-border-light-1);
-	border-radius: 3px;
-	background: var(--dnd5e-background-10);
-	padding: 0.125rem;
-	margin-top: 0.125rem;
-	margin-bottom: 0.125rem;
-}
-
-.rsr-damage .dice-tooltip .tooltip-part {
-	position: relative;
-}
-
-/* Only parts with an alternative damage type get .rsr-damage-type-toggle, so a
-   fixed-type label stays inert while a changeable one reads as clickable. */
-.rsr-damage-type-toggle .total .label,
-.rsr-damage-type-toggle .total img {
-	cursor: pointer;
-}
-
-.rsr-damage-type-toggle .total .label:hover {
-	text-shadow: 0 0 10px var(--color-shadow-primary);
-}
-
-.rsr-damage-type-toggle .total img:hover {
-	filter: drop-shadow(0 0 4px var(--color-shadow-primary));
-}
-
-.rsr-damage-buttons,
-.rsr-damage-buttons-xl {
-	text-align: right!important;
-	display: flex;
-}
-
-.rsr-damage-buttons {
+	flex-wrap: wrap;
 	justify-content: center;
+	gap: 4px;
+	padding: 4px 6px;
+	border-block-start: 1px dashed var(--dnd5e-color-blue-gray-3, #888);
+}
+
+.roll-breakdown .rsr-roll-actions button.rsr-roll-action {
+	--button-size: 22px;
+	display: inline-flex;
 	align-items: center;
-	padding-right: 8%;
+	gap: 3px;
+	inline-size: auto;
+	min-inline-size: 26px;
+	block-size: 22px;
+	padding: 0 6px;
+	font-size: var(--font-size-11);
+	line-height: 1;
+	flex: 0 0 auto;
 }
 
-.rsr-damage-buttons button {
-	width: 22px;
-	height: 22px;
-	font-size: var(--font-size-12);
-	line-height: 22px;
-	padding: 0;
-	gap: 0;
-}
-
-.rsr-damage-buttons-xl {
-	justify-content: space-between;
-	align-items: center;
-	padding-right: 0;
-	padding-top: 5px;
-}
-
-.rsr-damage-buttons-xl button {
-	width: 32px;
-	height: 26px;
-	font-size: var(--font-size-14);
-	line-height: 26px;
-	padding: 0;
-	gap: 0;
-}
-
-.rsr-damage-buttons button.rsr-wide,
-.rsr-damage-buttons-xl button.rsr-wide {
-	width: auto;
-	padding: 0 3px;
-}
-
-.rsr-damage-buttons button > i,
-.rsr-damage-buttons-xl button > i {
+.roll-breakdown .rsr-roll-actions button.rsr-roll-action > i {
 	margin: 0;
 }
 
-.rsr-damage-buttons div {
-	height: 22px;
-	font-size: var(--font-size-14);
-	line-height: 18px;
-	padding: 0;
-	color: var(--color-text-light-4);
-	margin-left: 3px
+.roll-breakdown .rsr-roll-actions button.rsr-roll-action[aria-pressed="true"] {
+	border-color: var(--dnd5e-color-gold, #9f9275);
+	box-shadow: 0 0 4px var(--dnd5e-color-gold, #9f9275);
+	font-weight: bold;
 }
 
-.rsr-concentration-buttons {
-	margin-top: 3px;
-	line-height: 24px;
-}
+/* ---------- Damage type cycling (issue #27) ---------- */
 
-.rsr-indicator i:hover {
-	cursor: default;
-	text-shadow: none;
-}
-
-.rsr-overlay {
-	text-align: center!important;
-	flex-grow: 1;
-	position: absolute;
-	left: 0;
-	right: 0;
-	top: 0;
-	bottom: 0;
-	padding: 0 30%;
-
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	z-index: 1;
-}
-
-.rsr-overlay div {
-	width: 24px;
-	height: 24px;
-	font-size: var(--font-size-14);
-	line-height: 26px;
-	padding: 0;
-	color: var(--color-text-dark-5);
-}
-
-.rsr-overlay i:hover {
+.roll-breakdown .rsr-damage-type-toggle .total .label,
+.roll-breakdown .rsr-damage-type-toggle .total img {
 	cursor: pointer;
-	text-shadow: 0 0 10px var(--color-shadow-primary);
 }
 
-.rsr-overlay-header {
-	left: auto;
-	justify-content: right;
+.roll-breakdown .rsr-damage-type-toggle .total .label:hover {
+	text-shadow: 0 0 6px var(--color-shadow-primary);
 }
 
-.rsr-overlay-header button {
-	width: 30px;
-	height: 30px;
-	font-size: 14px;
+.roll-breakdown .rsr-damage-type-toggle .total img:hover {
+	filter: drop-shadow(0 0 4px var(--color-shadow-primary));
 }
 
-.dnd5e.item form .rsr-item {
-	padding: 8px 8px 0;
-	overflow-y: auto;
+/* ---------- Interactive dice (reroll / fudge) ---------- */
+
+.dice-tooltip .dice-rolls .roll[data-rsr-path] {
+	cursor: pointer;
+	transition: transform 0.15s;
+	position: relative;
+	pointer-events: auto;
 }
 
-.dnd5e.sheet.item .rsr-item input[type="text"],
-.dnd5e.sheet.item .rsr-item input[type="number"],
-.dnd5e.sheet.item .rsr-item select {
-	border: 1px solid #7a7971;
-	background: rgba(0, 0, 0, 0.05);
+.dice-tooltip .dice-rolls .roll[data-rsr-path]:hover {
+	text-shadow: 0 0 5px red;
+	transform: scale(1.2);
+	z-index: 100;
+	font-weight: bold;
 }
 
-.dnd5e.sheet.item .rsr-item label.checkbox {
-		display: inline-table;
-		padding: 0px 8px;
+/* ---------- Native damage tray facelift ---------- */
+
+damage-application .damage-multipliers .multiplier-button.rsr-mult-double {
+	position: relative;
 }
 
-.rsr-options-subsection {
-	align-items: center;
-    padding: 0 2px;
-	border-bottom: 0px;
+damage-application .damage-multipliers .multiplier-button.rsr-mult-double > .rsr-mult-bg {
+	position: absolute;
+	inset: 0;
+	margin: auto;
+	inline-size: 18px;
+	block-size: 18px;
+	opacity: 0.5;
+	pointer-events: none;
+	--icon-fill: currentcolor;
 }
 
-.rsr-options-title {
-	padding-left: 6px;
-	padding-top: 4px;
-	font-size: 12px;
+damage-application .damage-multipliers .multiplier-button.rsr-mult-double > span {
+	position: relative;
+	z-index: 1;
+	font-weight: bold;
 }
 
-.rsr-options-box {
-	background: rgba(0, 0, 0, 0.05);
-	border: 1px solid #999;
-	border-radius: 4px;
-	box-shadow: 0 0 2px #fff inset;
-	display: flex;
-	flex-flow: row wrap;
-	justify-content: space-between;
+damage-application .damage-multipliers .multiplier-button.rsr-mult-healing > i {
+	margin: 0;
+	font-size: var(--font-size-11);
 }
 
-.rsr-options-spacer {
-	padding-bottom: 8px;
+damage-application .damage-multipliers .rsr-temphp-button > i {
+	margin: 0;
+	font-size: var(--font-size-11);
 }
 
-.rsr-hide {
-    display: none !important;
+/* ---------- Supplements on RSR cards ---------- */
+
+.chat-card p.supplement.rsr-supplement {
+	margin-block: 0.25rem 0;
 }
 
-/* ==========================================
-   ADDON STYLES (Reroll, Bonuses, Splitting)
-   ========================================== */
+/* ---------- GM reveal control ---------- */
 
-/* Reroll Styling - Target the structure directly */
-.dice-tooltip .dice-rolls .roll {
-    cursor: pointer !important; /* Changed from context-menu to pointer for better UX */
-    transition: all 0.2s;
-    position: relative;
-    /* CRITICAL FIX: Forces the die to receive mouse clicks */
-    pointer-events: auto !important; 
+.message .message-metadata .rsr-reveal,
+.card-summary .rsr-reveal {
+	background: none;
+	border: none;
+	box-shadow: none;
+	padding: 0;
+	inline-size: auto;
+	block-size: auto;
+	color: var(--color-text-secondary, inherit);
+	cursor: pointer;
 }
 
-.dice-tooltip .dice-rolls .roll:hover {
-    text-shadow: 0 0 5px red; /* Updated to match your JS injection style */
-    transform: scale(1.2);    /* Updated scale to match your JS injection */
-    color: white;             /* Updated color to match your JS injection */
-    z-index: 100;
-    font-weight: bold;
+.message .message-metadata .rsr-reveal:hover,
+.card-summary .rsr-reveal:hover {
+	color: var(--dnd5e-color-gold, #ff6400);
+	text-shadow: 0 0 6px var(--color-shadow-primary);
 }
 
-.dice-tooltip .dice-rolls .roll.rsr-ready {
-    /* Marker class to ensure styles apply if needed specifically */
-}
+/* ---------- Retroactive bonus window ---------- */
 
-/* Retroactive Bonus Button in Headers */
-.rsr-addon-bonus-btn {
-    display: inline-block;
-    margin-left: 8px; /* Standardized margin */
-    cursor: pointer;
-    font-size: 0.9em; /* Matching JS injection */
-    opacity: 0.6;     /* Matching JS injection */
-    transition: opacity 0.2s;
-}
-
-.rsr-addon-bonus-btn:hover {
-    opacity: 1;
-    color: var(--color-text-hyperlink, #ff6400); /* Fallback color added */
-    text-shadow: 0 0 8px var(--color-shadow-highlight, #ff0000);
-}
-
-/* Application V2 Window Styles */
 .rsr-bonus-window .form-group {
-    transition: background 0.2s;
+	transition: background 0.2s;
 }
+
 .rsr-bonus-window .form-group:hover {
-    background: var(--color-bg-light-2) !important;
-}
-/* Ensure RSR titles have enough space for the addon buttons */
-.rsr-title {
-    position: relative;
-    padding-right: 25px; /* Creates a gutter for the button */
-}
-
-.rsr-addon-bonus-btn {
-    position: absolute;
-    right: 5px;
-    top: 50%;
-    transform: translateY(-50%);
-}
-
-/* Versatile tag — appended to the dnd5e native damage card's formula row
-   when the V keybind was held during the roll. Mirrors the "(Versatile)"
-   suffix the RSR-mode damage card builds into its section title. */
-.rsr-versatile-tag {
-    margin-left: 0.3em;
-    font-style: italic;
-    opacity: 0.75;
-    font-size: 0.9em;
-}
-
-/* ==========================================
-   dnd5e 6.x chat cards
-   ========================================== */
-
-/* dnd5e 6 lays out `.card-header` in compact (system-typed) messages as a flex row for
-   its item icon + title. RSR's section blocks reuse that class, so restore block layout
-   for them. */
-.message.compact section.card-header[class*="rsr-section-"],
-.chat-message.compact section.card-header[class*="rsr-section-"] {
-	display: block;
-}
-
-/* RSR's classic roll replaces dnd5e 6's compact roll button inside `section.icon-row`. */
-section.icon-row > .dice-roll.rsr-roll {
-	flex: 1;
-	min-width: 0;
-}
-
-.rsr-attack-targets {
-	margin-top: 0.25rem;
-}
-
-.rsr-card-buttons {
-	display: flex;
-	gap: 0.25rem;
-	margin: 0.25rem 0;
-}
-
-.rsr-card-buttons > button {
-	flex: 1;
-}
-
-.rsr-native-damage > damage-application {
-	display: block;
-	margin-top: 0.25rem;
+	background: var(--color-bg-light-2) !important;
 }
