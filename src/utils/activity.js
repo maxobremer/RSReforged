@@ -508,7 +508,9 @@ export class ActivityUtility {
             await ActivityUtility._rollFormulaInto(message, state, { configure });
         }
 
-        flags.processed = true;
+        // Re-read the namespace: _registerCardAsAttack re-initialises the document
+        // (updateSource), which replaces message.flags with a fresh object.
+        message.flags[MODULE_SHORT].processed = true;
         await ActivityUtility._persistRollState(message, state);
     }
 
@@ -552,7 +554,7 @@ export class ActivityUtility {
         }
 
         if (!state.newRolls.length) return;
-        flags.processed = true;
+        message.flags[MODULE_SHORT].processed = true;
         await ActivityUtility._persistRollState(message, state);
     }
 
