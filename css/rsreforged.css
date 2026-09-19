@@ -98,12 +98,14 @@ damage-application .damage-multipliers .multiplier-button.rsr-mult-double {
 damage-application .damage-multipliers .multiplier-button.rsr-mult-double > .rsr-mult-bg {
 	position: absolute;
 	inset: 0;
-	margin: auto;
-	inline-size: 18px;
-	block-size: 18px;
-	opacity: 0.5;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	inline-size: 100%;
+	font-size: var(--font-size-14);
+	opacity: 0.35;
 	pointer-events: none;
-	--icon-fill: currentcolor;
 }
 
 damage-application .damage-multipliers .multiplier-button.rsr-mult-double > span {
