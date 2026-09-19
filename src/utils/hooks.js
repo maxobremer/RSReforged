@@ -254,7 +254,12 @@ export class HooksUtility {
             if (!("whisper" in changed) && !("blind" in changed) && !("rolls" in changed)) return;
             let origin = null;
             try { origin = message.system?.origin ?? null; } catch (err) { origin = null; }
-            if (origin && origin !== message && origin.id) ui.chat?.updateMessage?.(origin);
+            if (!origin || origin === message || !origin.id) return;
+            // Resets the usage card's cached save outcomes (used by the damage tray's on-save
+            // multiplier) and re-renders its damage messages, like a `system` change would.
+            Promise.resolve(origin.system?.onDescendentRefresh?.(message))
+                .catch(err => LogUtility.debug("onDescendentRefresh failed", err))
+                .finally(() => ui.chat?.updateMessage?.(origin));
         });
     }
 

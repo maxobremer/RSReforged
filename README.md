@@ -1,5 +1,19 @@
 # RSReforged
 
+> **GMC fork 5.0.0-gmc** — personal fork for Foundry V14 (14.367+) and dnd5e 6.0.x. It has no
+> `manifest`/`download`, so Foundry's "Update All" skips it; update it by hand.
+>
+> What differs from upstream RSReforged:
+> - **Look:** every card RSR produces uses dnd5e 6's compact chat style. Attack, damage and formula rows on a usage card are rendered with dnd5e's own `attack-card`, `damage-card`, `roll-compact` and `card-rows` templates, and damage uses dnd5e's native `<damage-application>` tray. Standalone checks, saves, death saves, damage and healing stay dnd5e's native cards; RSR only decorates them.
+> - **Multiroll (default on):** normal d20 rolls are evaluated as `2d20kf` (keep first; `kf` is a die modifier RSR registers on dnd5e's `D20Die`). The ignored die is shown dimmed next to the natural d20 and in the breakdown.
+> - **Roll breakdown actions:** click a roll total to open its breakdown; the owner/GM gets **+ Bonus** on every roll, **Disadvantage / Normal / Advantage** on d20 rolls (uses the second d20; updates total, crit/fumble and hit/miss pills), and **Critical** on RSR card damage.
+> - **Fast-forward:** rolls skip their configuration dialog unless the dnd5e "Skip Dialog" key (Shift) is held; Alt/Ctrl keep their dnd5e meaning. dnd5e 6.0.3 has no built-in setting for this, so RSR sets `dialog.configure` in `dnd5e.preRoll*V2` / `dnd5e.preUseActivity` (explicit values from macros or other modules win). Client setting *Fast-Forward Rolls (Shift to Configure)*.
+> - **One card when configured:** Shift-using an activity shows the usage, attack and damage dialogs one after another, but every result lands on the single usage card. A cancelled dialog leaves dnd5e's button on the card; clicking it rolls onto the same card.
+> - **Private rolls:** GM/blind/self rolls are hidden completely from players who may not see them (no "???" card, no summary line in a usage card). GMs get an eye button to reveal a message to everyone.
+> - **Damage tray:** in the multiplier row, "-1" is a heart (healing), "2" shows the damage type icon, and an hourglass applies the total as temporary HP. Works on every dnd5e damage tray.
+> - Debug helpers: `game.modules.get("rsreforged").api.debug` (`inspect(messageId?)`, `settings()`, `enable(true)`, `trayPatched()`, `multirollModifier()`, `itemUseWrapped()`).
+> - Integration hooks now pass plain `HTMLElement`s (no jQuery); `rsreforged.renderRoll` passes an array of the inserted elements; `rsreforged.renderApplyDamageButtons` no longer fires.
+
 > Quality-of-life roll automation for Foundry VTT's D&D 5e system.
 
 ![Latest Release](https://img.shields.io/badge/dynamic/json.svg?url=https%3A%2F%2Fraw.githubusercontent.com%2Farrowedisgaming%2FRSReforged%2Fmaster%2Fmodule.json&label=Latest%20Release&prefix=v&query=$.version&colorB=blue&style=for-the-badge)
