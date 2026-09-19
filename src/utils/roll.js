@@ -130,6 +130,8 @@ export class RollUtility {
         // Preserve OrderActivity dialogs because they populate costs/craft/trade
         // flags that dnd5e later expects during bastion order resolution.
         const isOrderActivity = activity?.type === "order";
+        // Summon / transform profiles and enchantment choices are picked in the usage dialog.
+        const choosesInDialog = ["summon", "transform", "enchant"].includes(activity?.type);
         // Smite-like features (Divine Smite et al.) need the dialog so the player can
         // pick which slot to spend (a spellSlots-typed consumption target).
         const consumesSpellSlot = !!activity?.consumption?.targets?.some?.(t => t?.type === "spellSlots");
@@ -146,6 +148,7 @@ export class RollUtility {
         } else if (dialogConfig.configure !== false) {
             dialogConfig.configure = isLeveledSpell
                 || isOrderActivity
+                || choosesInDialog
                 || consumesSpellSlot
                 || hasConsumptionScaling
                 || hasUpcastScaling;
