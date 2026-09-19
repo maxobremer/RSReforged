@@ -176,25 +176,6 @@ export class CoreUtility {
     }
 
     /**
-     * Gets the current set of tokens that are selected or targeted (or both) depending on the chosen setting.
-     * @returns {Set} A set of tokens that the module considers as current targets.
-     */
-    static getCurrentTargets() {
-        let selectTokens = SettingsUtility._applyDamageToSelected ? canvas.tokens.controlled : [];
-        let targetTokens = SettingsUtility._applyDamageToTargeted ? game.user.targets : [];
-
-        if (SettingsUtility._prioritiseDamageSelected && selectTokens.length > 0) {
-            targetTokens = [];
-        }
-
-        if (SettingsUtility._prioritiseDamageTargeted && targetTokens.size > 0) {
-            selectTokens = [];
-        }
-
-        return new Set([...selectTokens, ...targetTokens]);
-    }
-
-    /**
      * Gets the default configured dice sound from Foundry VTT config.
      * @returns {Object} A data package with the sound data to play when rolling.
      */
