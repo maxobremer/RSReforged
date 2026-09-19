@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] — 2026-09-19 (GMC fork)
+
+First release of the GMC fork, for Foundry V14 (14.367+) and dnd5e 6.0.x. Versioned 6.x to follow dnd5e's major version. Not compatible with dnd5e 5.x.
+
+### Changed
+
+- **Ported to Foundry V14 and dnd5e 6.** Chat messages use dnd5e 6's system data models (`usage` / `attack` / `damage` / `check` / `save`), V14 message modes, and the `_del` data operator.
+- **Cards use dnd5e 6's compact chat style.** Attack, damage and formula rows on a usage card are rendered with dnd5e's own templates and the native `<damage-application>` tray. RSR's own `templates/` folder is gone. A dotted divider separates the attack and damage rows.
+- **Fast-forward by default.** Rolls skip their dialog unless Shift (dnd5e's "Skip Dialog" key) is held. A Shift-used activity shows its dialogs, and every result still lands on the single usage card.
+- **Multiroll is always on.** Normal d20 rolls are `2d20kf`, and the ignored die is shown dimmed.
+- **Roll breakdown actions.** Click a roll to open its breakdown. It has **+ Bonus** on every roll, **Disadvantage / Normal / Advantage** on d20 rolls, and **Critical** on card damage.
+- **Private rolls are fully hidden** from players who may not see them. On save/check results inside a usage card, the GM gets an eye control that reveals the roll and then, faded, makes it private again.
+- **Damage tray facelift** on every dnd5e damage tray:
+  - The multiplier row reads heart (healing), hourglass (temp HP mode), 0, ¼, ½, 1, and 2 with a faded burst behind it.
+  - In temp HP mode, the target pills preview the temp HP each target would get, and Apply grants it.
+- The manifest and download point at this fork. The release workflow no longer ships `templates/` and never publishes to Foundry's package browser; the `rsreforged` package id there belongs to upstream.
+- The upstream test suite covers the dnd5e 5 code paths and does not match this port. The Test workflow now runs only on manual dispatch.
+
+### Fixed
+
+- Usage cards could stay hidden (processed flag never saved) after the attack roll was registered.
+- Integration render hooks receive jQuery again where listeners expect it (Wire / AC5e compatibility).
+
 ## [4.13.4] — 2026-07-27
 
 ### Fixed

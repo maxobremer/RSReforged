@@ -1,9 +1,9 @@
 name: Test
 
+# GMC fork: the upstream suite targets the dnd5e 5 code paths this fork
+# replaced, so it only runs on demand.
 on:
-  push:
-    branches: [master]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   vitest:
