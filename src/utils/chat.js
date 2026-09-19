@@ -9,6 +9,17 @@ import { PrivacyUtility } from "./privacy.js";
 import { ROLL_TYPE, RollUtility } from "./roll.js";
 import { HIDE_NPC_ROLL_STYLES, SETTING_NAMES, SettingsUtility } from "./settings.js";
 
+/**
+ * Third-party integrations (WM5e, AC5e) were written against upstream RSR, which
+ * passed jQuery objects to its render hooks. Keep that contract.
+ */
+function _jq(el) {
+    const $ = globalThis.jQuery;
+    if ( !$ || !el ) return el;
+    return (el instanceof $) ? el : $(el);
+}
+
+
 export const MESSAGE_TYPE = {
     ROLL: "roll",
     USAGE: "usage",
@@ -149,7 +160,7 @@ export class ChatUtility {
         }
 
         const content = element.querySelector(".message-content") ?? element;
-        Hooks.callAll(`${MODULE_SHORT}.renderChatMessageContent`, message, content, type);
+        Hooks.callAll(`${MODULE_SHORT}.renderChatMessageContent`, message, _jq(content), type);
 
         if (isRsrCard) _scrollChatToBottom();
     }
@@ -446,7 +457,7 @@ async function _renderUsageCard(message, element) {
     if (!content) return;
 
     // Integration surface — fires before RSR changes the dnd5e-rendered card.
-    Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, content, ROLL_TYPE.ACTIVITY);
+    Hooks.callAll(`${MODULE_SHORT}.preRenderChatMessageContent`, message, _jq(content), ROLL_TYPE.ACTIVITY);
 
     const flags = message.flags[MODULE_SHORT];
     const rolls = ChatUtility.getMessageRolls(message);
@@ -480,20 +491,20 @@ async function _renderUsageCard(message, element) {
         const attack = await _renderAttackSection(message, rolls[attackIndex], attackIndex);
         sections.push(...attack.nodes);
         supplements.push(...attack.supplements);
-        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.ATTACK, attack.nodes);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, _jq(content), ROLL_TYPE.ATTACK, _jq(attack.nodes));
     }
 
     if (damageRolls.length) {
         const damage = await _renderDamageSection(message, damageRolls);
         sections.push(...damage.nodes);
         supplements.push(...damage.supplements);
-        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.DAMAGE, damage.nodes);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, _jq(content), ROLL_TYPE.DAMAGE, _jq(damage.nodes));
     }
 
     if (formulaIndex >= 0) {
         const formula = await _renderFormulaSection(message, rolls[formulaIndex], formulaIndex);
         sections.push(...formula.nodes);
-        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, content, ROLL_TYPE.FORMULA, formula.nodes);
+        Hooks.callAll(`${MODULE_SHORT}.renderRoll`, message, _jq(content), ROLL_TYPE.FORMULA, _jq(formula.nodes));
     }
 
     _stripLegacyClass(sections);
