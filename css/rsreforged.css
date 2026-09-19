@@ -170,3 +170,12 @@ damage-application .damage-multipliers .rsr-temphp-button > i {
 .rsr-bonus-window .form-group:hover {
 	background: var(--color-bg-light-2) !important;
 }
+
+/* ---------- Attack / damage separation on usage cards ---------- */
+
+/* A divider (like an <hr>) between the attack rows and the first damage row. */
+.chat-message .message-content > section.icon-row.rsr-attack + section.icon-row.rsr-damage {
+	margin-block-start: 0.5rem;
+	padding-block-start: 0.5rem;
+	border-block-start: var(--dnd5e-border-dotted, 1px dotted var(--color-border-light-2, #9f9275));
+}
