@@ -147,7 +147,7 @@
                 "half": "Apply half damage",
                 "full": "Apply full damage",
                 "double": "Apply double damage",
-                "tempHp": "Apply the total as temporary hit points"
+                "tempHp": "Temporary hit points: preview and apply the total as temp HP"
             },
             "ignoredDie": "Ignored d20"
         },

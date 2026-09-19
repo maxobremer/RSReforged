@@ -12,9 +12,11 @@ import { LogUtility } from "./log.js";
  * exists). Custom-element lifecycle callbacks are captured at define time, so the prototype
  * methods those callbacks call are wrapped instead:
  *  - buildMultiplierButtons: "-1" shows a heart (apply as healing), "2" keeps its label with
- *    the roll's (first) damage type icon behind it, every button gets a tooltip;
- *  - buildTargetContainer: appends an hourglass button that applies the damage total as
- *    temporary HP (Actor5e#applyTempHP) to the tray's checked targets;
+ *    a faded burst icon behind it, every button gets a tooltip;
+ *  - buildTargetContainer: adds an hourglass "temp HP" mode right after the heart. In that
+ *    mode the tray treats the whole roll as temporary hit points: the target pills preview the
+ *    temp HP each target would get and Apply grants it (dnd5e's own "temphp" damage type, so
+ *    Actor5e#applyDamage keeps the higher of the current and the new temp HP);
  *  - getMergedOptions: on RSR usage cards of save activities, pre-selects the on-save
  *    multiplier for targets whose summarized save succeeded (what dnd5e does for its own
  *    damage messages through the private #saveMultiplier).
@@ -55,8 +57,13 @@ export class TrayUtility {
 
         const onChangeMultiplier = proto._onChangeMultiplier;
         proto._onChangeMultiplier = function (event) {
-            if (event?.target?.closest?.(".multiplier-button")) this._rsrDirty = true;
-            return onChangeMultiplier.call(this, event);
+            if (event?.target?.closest?.(".multiplier-button")) {
+                this._rsrDirty = true;
+                this._rsrTemp = false;
+            }
+            const result = onChangeMultiplier.call(this, event);
+            TrayUtility._refreshTempButton(this);
+            return result;
         };
 
         const getMergedOptions = proto.getMergedOptions;
@@ -67,10 +74,43 @@ export class TrayUtility {
                     const multiplier = TrayUtility._usageSaveMultiplier(this.chatMessage, uuid);
                     if (multiplier !== null) merged.multiplier = multiplier;
                 }
+                if (this._rsrTemp && (merged.multiplier !== 0)) merged.multiplier = 1;
             } catch (err) {
                 LogUtility.debug("save multiplier lookup failed", err);
             }
             return merged;
+        };
+
+        // Temp HP mode: evaluate and apply the roll as dnd5e "temphp" damage.
+        const calculateDamage = proto.calculateDamage;
+        proto.calculateDamage = function (actor, options) {
+            if (!this._rsrTemp) return calculateDamage.call(this, actor, options);
+            const damages = this.damages;
+            this.damages = TrayUtility._asTempHp(damages);
+            try {
+                return calculateDamage.call(this, actor, options);
+            } finally {
+                this.damages = damages;
+            }
+        };
+
+        const onApplyDamage = proto._onApplyDamage;
+        proto._onApplyDamage = async function (event) {
+            if (!this._rsrTemp) return onApplyDamage.call(this, event);
+            const damages = this.damages;
+            this.damages = TrayUtility._asTempHp(damages);
+            try {
+                return await onApplyDamage.call(this, event);
+            } finally {
+                this.damages = damages;
+            }
+        };
+
+        const refreshMultiplier = proto.refreshMultiplier;
+        proto.refreshMultiplier = function () {
+            const result = refreshMultiplier.call(this);
+            try { TrayUtility._refreshTempButton(this); } catch (err) { LogUtility.debug("temp HP refresh failed", err); }
+            return result;
         };
 
         proto._rsrPatched = true;
@@ -89,15 +129,8 @@ export class TrayUtility {
             button.classList.add("rsr-mult-healing");
             button.innerHTML = '<i class="fa-solid fa-heart" inert></i>';
         } else if (value === 2) {
-            const icon = TrayUtility._primaryDamageIcon(tray);
-            if (icon) {
-                button.classList.add("rsr-mult-double");
-                const bg = document.createElement("dnd5e-icon");
-                bg.classList.add("rsr-mult-bg");
-                bg.setAttribute("src", icon);
-                bg.setAttribute("inert", "");
-                button.prepend(bg);
-            }
+            button.classList.add("rsr-mult-double");
+            button.insertAdjacentHTML("afterbegin", '<i class="fa-fw fa-solid fa-burst rsr-mult-bg" inert></i>');
         }
     }
 
@@ -108,24 +141,13 @@ export class TrayUtility {
         return key ? CoreUtility.localize(`${MODULE_SHORT}.chat.tray.${key}`) : null;
     }
 
-    /**
-     * Icon of the roll's damage type (the first one when several are rolled).
-     * @param {HTMLElement} tray
-     * @returns {string|null}
-     */
-    static _primaryDamageIcon(tray) {
-        const type = (tray.damages ?? []).find(d => d?.type)?.type
-            ?? tray.chatMessage?.rolls?.find(r => r?.options?.type)?.options?.type;
-        if (!type) return null;
-        return (CONFIG.DND5E.damageTypes[type] ?? CONFIG.DND5E.healingTypes[type])?.icon ?? null;
-    }
-
     static _appendTempHpButton(tray) {
         const row = tray.querySelector(".multiplier-row .damage-multipliers");
         if (!row || row.querySelector(".rsr-temphp-button")) return;
         const button = document.createElement("button");
         button.type = "button";
         button.classList.add("split-control", "rsr-temphp-button");
+        button.ariaPressed = "false";
         const label = CoreUtility.localize(`${MODULE_SHORT}.chat.tray.tempHp`);
         button.dataset.tooltip = label;
         button.setAttribute("aria-label", label);
@@ -133,32 +155,42 @@ export class TrayUtility {
         button.addEventListener("click", event => {
             event.preventDefault();
             event.stopPropagation();
-            TrayUtility.applyTempHp(tray, button);
+            TrayUtility.toggleTempHp(tray);
         });
-        row.append(button);
+        // Right after the heart (healing), before "0".
+        const healing = row.querySelector('.multiplier-button[value="-1"]');
+        if (healing) healing.after(button);
+        else row.prepend(button);
     }
 
     /**
-     * Apply the tray's damage total as temporary hit points to its checked, owned targets.
+     * Switch a tray in or out of temp HP mode and rebuild its target previews.
      * @param {HTMLElement} tray A <damage-application> element.
-     * @param {HTMLButtonElement} [button]
+     * @param {boolean} [state] Force a state; toggles when omitted.
      */
-    static async applyTempHp(tray, button) {
-        const total = Math.floor((tray.damages ?? []).reduce((sum, d) => sum + (Number(d?.value) || 0), 0));
-        if (!(total > 0)) return;
-        const options = tray.targetList?.querySelectorAll("option") ?? [];
-        if (button) button.disabled = true;
-        try {
-            for (const option of options) {
-                if (!("checked" in option.dataset)) continue;
-                const token = fromUuidSync(option.value);
-                if (!token?.isOwner) continue;
-                await token.actor?.applyTempHP(total);
-            }
-        } finally {
-            if (button) button.disabled = false;
-        }
-        if (game.settings.get("dnd5e", "autoCollapseChatTrays") !== "manual") tray.open = false;
+    static toggleTempHp(tray, state) {
+        tray._rsrTemp = state ?? !tray._rsrTemp;
+        if (tray._rsrTemp) tray.multiplier = 1;
+        tray.targetList?.buildTargetsList();
+        try { tray.refreshMultiplier(); } catch (err) { TrayUtility._refreshTempButton(tray); }
+    }
+
+    static _refreshTempButton(tray) {
+        const button = tray.querySelector(".multiplier-row .rsr-temphp-button");
+        if (!button) return;
+        button.ariaPressed = `${!!tray._rsrTemp}`;
+        if (!tray._rsrTemp) return;
+        for (const b of tray.querySelectorAll(".multiplier-row .multiplier-button")) b.ariaPressed = "false";
+    }
+
+    /**
+     * The tray's damage descriptions re-typed as temporary hit points.
+     * @param {object[]} damages
+     * @returns {object[]}
+     */
+    static _asTempHp(damages) {
+        const total = (damages ?? []).reduce((sum, d) => sum + (Number(d?.value) || 0), 0);
+        return [{ type: "temphp", value: Math.max(0, Math.floor(total)), properties: new Set() }];
     }
 
     /**
