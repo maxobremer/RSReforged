@@ -28,6 +28,20 @@ export class PrivacyUtility {
     }
 
     /**
+     * Whether a GM revealed this (formerly private) message; it can be made private again.
+     * @param {ChatMessage} message
+     * @returns {boolean}
+     */
+    static isRevealed(message) {
+        return !PrivacyUtility.isPrivate(message) && !!message?.flags?.[MODULE_SHORT]?.revealedFrom;
+    }
+
+    /** Whether the GM gets the reveal / hide control for this message. */
+    static hasControl(message) {
+        return game.user.isGM && (PrivacyUtility.isPrivate(message) || PrivacyUtility.isRevealed(message));
+    }
+
+    /**
      * Whether the current user must not see this message at all.
      * @param {ChatMessage} message
      * @returns {boolean}
@@ -63,7 +77,7 @@ export class PrivacyUtility {
                 summary.remove();
                 continue;
             }
-            if (game.user.isGM && PrivacyUtility.isPrivate(child)) {
+            if (PrivacyUtility.hasControl(child)) {
                 const host = summary.firstElementChild;
                 if (host && !host.querySelector(".rsr-reveal")) {
                     host.append(PrivacyUtility._createRevealButton(child, "unbutton control-button"));
@@ -78,7 +92,7 @@ export class PrivacyUtility {
      * @param {HTMLElement} element
      */
     static injectRevealButton(message, element) {
-        if (!game.user.isGM || !PrivacyUtility.isPrivate(message)) return;
+        if (!PrivacyUtility.hasControl(message)) return;
         const metadata = element.querySelector(".message-header .message-metadata");
         if (!metadata || metadata.querySelector(".rsr-reveal")) return;
         const button = PrivacyUtility._createRevealButton(message, "chat-control");
@@ -87,18 +101,25 @@ export class PrivacyUtility {
         else metadata.append(button);
     }
 
+    /**
+     * The GM's eye control: reveals a private message, or (faded, once revealed) makes it
+     * private again.
+     */
     static _createRevealButton(message, classes) {
+        const revealed = PrivacyUtility.isRevealed(message);
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `${classes} rsr-reveal`;
-        const label = CoreUtility.localize(`${MODULE_SHORT}.chat.buttons.reveal`);
+        button.className = `${classes} rsr-reveal${revealed ? " rsr-revealed" : ""}`;
+        const label = CoreUtility.localize(`${MODULE_SHORT}.chat.buttons.${revealed ? "hide" : "reveal"}`);
         button.dataset.tooltip = label;
         button.setAttribute("aria-label", label);
+        button.setAttribute("aria-pressed", String(revealed));
         button.innerHTML = '<i class="fa-solid fa-eye fa-fw" inert></i>';
         button.addEventListener("click", event => {
             event.preventDefault();
             event.stopPropagation();
-            PrivacyUtility.reveal(message);
+            if (PrivacyUtility.isRevealed(message)) PrivacyUtility.hide(message);
+            else PrivacyUtility.reveal(message);
         });
         return button;
     }
@@ -110,8 +131,17 @@ export class PrivacyUtility {
      * @param {ChatMessage} message
      */
     static async reveal(message) {
-        if (!message || !game.user.isGM) return;
-        const update = { whisper: [], blind: false };
+        if (!message || !game.user.isGM || !PrivacyUtility.isPrivate(message)) return;
+        const update = {
+            whisper: [],
+            blind: false,
+            // Remembered so the GM can make it private again with the same recipients.
+            [`flags.${MODULE_SHORT}.revealedFrom`]: {
+                whisper: Array.from(message.whisper ?? []),
+                blind: !!message.blind,
+                mode: message._source?.messageMode ?? message._source?.mode ?? null
+            }
+        };
         try {
             const scratch = new ChatMessage.implementation(message.toObject());
             if (typeof scratch.applyMode === "function") {
@@ -124,6 +154,22 @@ export class PrivacyUtility {
             LogUtility.debug("reveal: applyMode probe failed, using whisper/blind only", err);
         }
         LogUtility.debug("reveal", message.id, update);
+        await message.update(update);
+    }
+
+    /**
+     * Make a revealed message private again: back to its original recipients, or to the GMs
+     * when those are unknown.
+     * @param {ChatMessage} message
+     */
+    static async hide(message) {
+        if (!message || !game.user.isGM) return;
+        const from = message.flags?.[MODULE_SHORT]?.revealedFrom ?? {};
+        const gms = game.users.filter(u => u.isGM).map(u => u.id);
+        const whisper = from.whisper?.length ? from.whisper : gms;
+        const update = { whisper, blind: !!from.blind, [`flags.${MODULE_SHORT}.revealedFrom`]: globalThis._del ?? null };
+        if (from.mode && ("messageMode" in (message._source ?? {}))) update.messageMode = from.mode;
+        LogUtility.debug("hide", message.id, update);
         await message.update(update);
     }
 }

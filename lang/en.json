@@ -128,7 +128,8 @@
                 "bonus": "Add a retroactive bonus to this roll",
                 "bonusShort": "Bonus",
                 "rollNormal": "Switch to a normal roll (first d20)",
-                "reveal": "Reveal this message to everyone"
+                "reveal": "Reveal this message to everyone",
+                "hide": "Make this message private again"
             },
             "prompts": {
                 "retroCrit": "Upgrade to Crit?",
