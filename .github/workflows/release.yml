@@ -108,8 +108,7 @@ jobs:
             README.md \
             src \
             css \
-            lang \
-            templates
+            lang
 
           ls -la "$zip_name"
           echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"

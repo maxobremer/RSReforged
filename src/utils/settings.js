@@ -35,7 +35,7 @@ export const SETTING_NAMES = {
     REROLL_SOUND_ENABLED: "rerollSoundEnabled",
     REROLL_LOG_CHAT: "rerollLogChat",
 
-    // GMC fork (5.0.0)
+    // dnd5e 6 port
     FAST_FORWARD_ROLLS: "fastForwardRolls",
     HIDE_PRIVATE_ROLLS: "hidePrivateRolls",
     DEBUG: "debug",
@@ -88,7 +88,7 @@ export class SettingsUtility {
     static registerSettings() {
         LogUtility.log("Registering module settings");
 
-        // ROLL DIALOG BEHAVIOUR (GMC fork)
+        // ROLL DIALOG BEHAVIOUR (dnd5e 6 port)
         game.settings.register(MODULE_NAME, SETTING_NAMES.FAST_FORWARD_ROLLS, {
             name: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.FAST_FORWARD_ROLLS}.name`),
             hint: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.FAST_FORWARD_ROLLS}.hint`),
@@ -99,7 +99,7 @@ export class SettingsUtility {
         });
 
         // QUICK ROLL SETTINGS
-        // QUICK_VANILLA_ENABLED is retired in the GMC fork (Shift-click now opens the dnd5e
+        // QUICK_VANILLA_ENABLED is retired since the dnd5e 6 port (Shift-click now opens the dnd5e
         // dialogs while keeping the one-card result). It stays registered, hidden, so stored
         // values do not error; RSR ignores it.
         game.settings.register(MODULE_NAME, SETTING_NAMES.QUICK_VANILLA_ENABLED, {
@@ -130,7 +130,7 @@ export class SettingsUtility {
         });
 
         // ADDITIONAL ROLL SETTINGS
-        // Multiroll is the default in the GMC fork; existing clients are migrated to true once
+        // Multiroll is the default since the dnd5e 6 port; existing clients are migrated to true once
         // (HooksUtility._migrateForkSettings) and may switch it off again afterwards.
         game.settings.register(MODULE_NAME, SETTING_NAMES.ALWAYS_ROLL_MULTIROLL, {
             name: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.ALWAYS_ROLL_MULTIROLL}.name`),
@@ -155,7 +155,7 @@ export class SettingsUtility {
             }
         });
 
-        // RETIRED (GMC fork): all damage is applied through dnd5e's native <damage-application>
+        // RETIRED (dnd5e 6 port): all damage is applied through dnd5e's native <damage-application>
         // tray now (with RSR's facelift, see tray.js). Kept registered and hidden so stored
         // world values load; the one-shot migration rewrites "rsr" to "dnd5e".
         game.settings.register(MODULE_NAME, SETTING_NAMES.DAMAGE_APPLY_MODE, {
@@ -254,7 +254,7 @@ export class SettingsUtility {
             requiresReload: false
         });
         
-        // RETIRED (GMC fork): only RSR's classic apply buttons used this; the native tray has
+        // RETIRED (dnd5e 6 port): only RSR's classic apply buttons used this; the native tray has
         // its own selected/targeted toggle.
         game.settings.register(MODULE_NAME, SETTING_NAMES.APPLY_DAMAGE_TO, {
             name: CoreUtility.localize(`${MODULE_SHORT}.settings.${SETTING_NAMES.APPLY_DAMAGE_TO}.name`),

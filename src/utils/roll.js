@@ -50,9 +50,9 @@ export class RollUtility {
 
         const keys = RollUtility.readRollKeys(config.event);
 
-        // GMC fork: fast-forward by default, the dnd5e "skip dialog" key (Shift) asks for the
+        // dnd5e 6 port: fast-forward by default, the dnd5e "skip dialog" key (Shift) asks for the
         // configuration dialog instead. An explicit `dialog.configure` from the caller (a macro,
-        // AC5e, Codex GMC, ...) always wins.
+        // AC5e, other modules, ...) always wins.
         if (dialog.configure === undefined) dialog.configure = keys.normal || !!config.vanilla;
 
         if (config.isConcentration) {

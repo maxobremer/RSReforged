@@ -128,7 +128,7 @@ export class HooksUtility {
         // inverse of dnd5e's default. dnd5e 6.0.3 has no built-in setting to swap this.
         // Ctrl/Alt keep their dnd5e meaning (disadvantage/advantage, or normal/critical for
         // damage) because D20Roll/DamageRoll.applyKeybindings still reads them afterwards.
-        // Explicit `dialog.configure` values (RSR's own rolls, macros, AC5e, Codex GMC) win.
+        // Explicit `dialog.configure` values (RSR's own rolls, macros, AC5e, other modules) win.
         Hooks.on(HOOKS_DND5E.PRE_ROLL_V2, (config, dialog, message) => {
             if (!dialog || dialog.configure !== undefined) return true;
             if (!SettingsUtility.fastForwardAppliesTo(config?.hookNames ?? [])) return true;
@@ -386,7 +386,7 @@ async function _migrateHideNpcRollSetting() {
 }
 
 /**
- * One-shot migrations for the GMC fork (5.0.0):
+ * One-shot migrations for the dnd5e 6 port:
  *  - world (GM): the retired RSR apply-button mode "rsr" becomes the native tray, the retired
  *    "vanilla" master switch is cleared;
  *  - client: multiroll becomes the default (a stored `false` from the old default is reset

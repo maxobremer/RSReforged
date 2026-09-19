@@ -4,7 +4,7 @@
 
 ![Latest Release](https://img.shields.io/badge/dynamic/json.svg?url=https%3A%2F%2Fraw.githubusercontent.com%2Farrowedisgaming%2FRSReforged%2Fmaster%2Fmodule.json&label=Latest%20Release&prefix=v&query=$.version&colorB=blue&style=for-the-badge)
 ![Foundry Versions](https://img.shields.io/endpoint?url=https%3A%2F%2Ffoundryshields.com%2Fversion%3Fstyle%3Dfor-the-badge%26url%3Dhttps%3A%2F%2Fraw.githubusercontent.com%2Farrowedisgaming%2FRSReforged%2Fmaster%2Fmodule.json&color=ff601e&label=Foundry)
-![dnd5e](https://img.shields.io/badge/dnd5e-5.3%2B-red?style=for-the-badge)
+![dnd5e](https://img.shields.io/badge/dnd5e-6.0%2B-red?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green?style=for-the-badge)
 
 <p align="center">
@@ -53,10 +53,10 @@ RSReforged removes clicks from D&D 5e rolls in Foundry VTT.
 
 | | Minimum | Verified |
 |---|---|---|
-| Foundry VTT | **14** | 14.539 |
-| dnd5e system | **5.3.0** | 5.3.0 |
+| Foundry VTT | **14.367** | 14.368 |
+| dnd5e system | **6.0.0** | 6.0.3 |
 
-**RSReforged does not work on Foundry v13** or **dnd5e 5.0–5.2**. If you're on those versions, stay on [upstream RSR v3.5.0](https://github.com/MangoFVTT/fvtt-ready-set-roll-5e/releases/tag/release-3.5.0) until you upgrade.
+**This version needs dnd5e 6.** On dnd5e 5.3, stay on [RSReforged 4.13.4](https://github.com/arrowedisgaming/RSReforged/releases/tag/release-4.13.4). **RSReforged does not work on Foundry v13** or **dnd5e 5.0–5.2**; on those, stay on [upstream RSR v3.5.0](https://github.com/MangoFVTT/fvtt-ready-set-roll-5e/releases/tag/release-3.5.0) until you upgrade.
 
 RSReforged also conflicts with other modules that overhaul the dnd5e roll pipeline, most notably [Midi-QOL](https://gitlab.com/tposney/midi-qol). They will fight each other in unpredictable ways. Pick one.
 

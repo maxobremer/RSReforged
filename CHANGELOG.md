@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Foundry V14 (14.367+) and dnd5e 6.0 support.** RSReforged now requires dnd5e 6.0.0 or later. dnd5e 5.3 users should stay on 4.13.4.
+  - Messages are read from dnd5e 6's chat-message data models (`system.item` / `activity` / `targets` / `origin`, and the `usage` / `attack` / `damage` / `check` / `save` types).
+  - It uses V14 message modes and the `_del` data operator.
+- **Cards use dnd5e 6's compact chat style.** Attack, damage and formula rows on a usage card are rendered with dnd5e's own templates and the native `<damage-application>` tray.
+  - RSR's `templates/` folder and `src/module/templates.js` are removed. The release zip no longer includes them.
+  - A dotted divider separates the attack and damage rows.
+- **Roll breakdown actions.** Clicking a roll total opens its breakdown with these buttons:
+  - **+ Bonus** on every roll
+  - **Disadvantage / Normal / Advantage** on d20 rolls. These switch to the second d20, so there is no reroll.
+  - **Critical** on card damage
+- **Fast-forward by default.** Rolls skip their dialog unless Shift (dnd5e's "Skip Dialog" key) is held.
+  - Explicit `dialog.configure` values from macros or other modules win.
+  - A Shift-used activity shows its dialogs, and every result still lands on the single usage card.
+- **Multiroll is on by default.** Normal d20 rolls are `2d20kf`, and the ignored die is shown dimmed.
+- **Private rolls are fully hidden** from players who may not see them: no "???" card and no summary line.
+  - On save/check results inside a usage card, the GM gets an eye control that reveals the roll.
+  - After a reveal the eye stays, faded; clicking it makes the roll private again.
+- **Damage tray** changes, on every dnd5e damage tray:
+  - The multiplier row reads heart (healing), hourglass, 0, ¼, ½, 1, and 2 with a faded burst behind it.
+  - The hourglass is a temp HP mode: the target pills preview temp HP, and Apply grants it.
+- Integration render hooks pass jQuery-wrapped content where existing listeners (e.g. WM5e, AC5e) expect it.
+
+### Known issues
+
+- The test suite still covers the dnd5e 5 code paths and needs updating for the port.
+
 ## [4.13.4] — 2026-07-27
 
 ### Fixed
