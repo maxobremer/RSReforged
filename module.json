@@ -1,6 +1,6 @@
 {
 	"id": "rsreforged",
-	"title": "RSReforged (GMC fork)",
+	"title": "RSReforged",
 	"description": "GMC fork of RSReforged (Ready Set Roll for D&D5e) for Foundry V14 and dnd5e 6: one-card quick rolls in the system's compact chat style, always-two-d20 multiroll with retroactive advantage/disadvantage, bonuses and crits from the roll breakdown, fast-forward rolls with Shift to configure, fully hidden private rolls with a GM reveal control on save results, and a damage tray facelift with a temp HP mode.",
 	"version": "6.0.0",
 	"compatibility": {
